@@ -1,11 +1,14 @@
 # gui/ink_canvas_widget.py
 
-from PyQt5.QtWidgets import QWidget, QSizePolicy, QMessageBox
-from PyQt5.QtGui import QPainter, QPixmap, QMouseEvent, QPaintEvent, QImage
-from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal
+from PyQt5.QtWidgets import QWidget, QSizePolicy, QMessageBox, QRubberBand, QStyle
+from PyQt5.QtGui import QPainter, QPixmap, QMouseEvent, QPaintEvent, QImage, QColor, QCursor, QIcon
+# --- FIX: Import QRectF ---
+from PyQt5.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QRectF
 
 import numpy as np
 import cv2
+import math
+import os
 
 from processing.utils import convert_cv_to_qt
 from processing.brush_engine import apply_basic_brush_stroke_segment, finalize_stroke
@@ -13,7 +16,8 @@ from processing.lienzo import Lienzo
 
 class InkCanvasWidget(QWidget):
     canvas_content_changed = pyqtSignal()
-    strokeFinished = pyqtSignal() # Signal to notify MainWindow that a stroke is done
+    strokeFinished = pyqtSignal()
+    zoomLevelChanged = pyqtSignal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,15 +34,36 @@ class InkCanvasWidget(QWidget):
             'type': 'round'
         }
 
-        self._current_tool = "brush" # Track current tool: "brush" or "eraser"
+        self._current_tool = "brush"
 
         self._stroke_inked_region_canvas: QRect = QRect()
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMouseTracking(True)
 
+        self._zoom_factor = 1.0
+        self._pan_offset_widget = QPoint(0, 0)
+
+        self._is_panning = False
+        self._pan_start_widget_pos: QPoint = None
+        self._pan_start_offset: QPoint = None
+
+        self.set_current_tool(self._current_tool)
+
+    def _get_cursor_path(self, cursor_name: str) -> str:
+        """Helper to get custom cursor path."""
+        base_path = os.path.dirname(__file__)
+        cursor_folder = os.path.join(base_path, '..', 'resources', 'cursors')
+        filepath = os.path.join(cursor_folder, f'{cursor_name}.png')
+        if os.path.exists(filepath):
+             return filepath
+        return ""
+
     def set_lienzo(self, lienzo_instance: Lienzo):
         self._lienzo = lienzo_instance
+        self._zoom_factor = 1.0
+        self._pan_offset_widget = QPoint(0, 0)
+        self.zoomLevelChanged.emit(self._zoom_factor)
         self.update()
         self.canvas_content_changed.emit()
 
@@ -52,18 +77,59 @@ class InkCanvasWidget(QWidget):
         """Sets the current tool ('brush' or 'eraser')."""
         if tool_name in ["brush", "eraser"]:
             self._current_tool = tool_name
-            print(f"Tool switched to: {self._current_tool}")
-            # Optionally update cursor appearance here
-            # self.setCursor(...)
+            if self._current_tool == "brush":
+                 custom_cursor_path = self._get_cursor_path('brush')
+                 if custom_cursor_path:
+                      self.setCursor(QCursor(QPixmap(custom_cursor_path)))
+                 else:
+                      self.setCursor(Qt.CrossCursor)
+            elif self._current_tool == "eraser":
+                 custom_cursor_path = self._get_cursor_path('eraser')
+                 if custom_cursor_path:
+                      self.setCursor(QCursor(QPixmap(custom_cursor_path)))
+                 else:
+                      self.setCursor(Qt.CrossCursor)
         else:
             print(f"Warning: Unknown tool name '{tool_name}'. Tool not changed.")
 
+    def set_zoom_pan(self, zoom_factor: float, pan_offset_widget: QPoint):
+        """Sets the zoom level and pan offset."""
+        if self._lienzo is None:
+             return
+
+        canvas_width, canvas_height = self._lienzo.get_size()
+        widget_width, widget_height = self.width(), self.height()
+
+        self._zoom_factor = max(0.01, min(zoom_factor, 100.0))
+
+        scaled_canvas_width = canvas_width * self._zoom_factor
+        scaled_canvas_height = canvas_height * self._zoom_factor
+
+        max_px = max(0, int(widget_width - scaled_canvas_width))
+        max_py = max(0, int(widget_height - scaled_canvas_height))
+        min_px = min(0, int(widget_width - scaled_canvas_width))
+        min_py = min(0, int(widget_height - scaled_canvas_height))
+
+        clamped_pan_x = np.clip(pan_offset_widget.x(), min_px, max_px)
+        clamped_pan_y = np.clip(pan_offset_widget.y(), min_py, max_py)
+
+        self._pan_offset_widget = QPoint(int(clamped_pan_x), int(clamped_pan_y))
+
+        self.zoomLevelChanged.emit(self._zoom_factor)
+        self.update()
+
+    def get_zoom_factor(self) -> float:
+        return self._zoom_factor
+
+    def get_pan_offset(self) -> QPoint:
+        return self._pan_offset_widget
+
     def paintEvent(self, event: QPaintEvent):
          painter = QPainter(self)
+         painter.fillRect(event.rect(), Qt.white)
 
          if self._lienzo is None or self._lienzo.get_canvas_data().size == 0:
-             painter.fillRect(event.rect(), Qt.white)
-             painter.drawText(event.rect(), Qt.AlignCenter, "等待加载画布或图片...")
+             painter.drawText(self.rect(), Qt.AlignCenter, "等待加载画布或图片...")
              return
 
          canvas_data = self._lienzo.get_canvas_data()
@@ -71,7 +137,6 @@ class InkCanvasWidget(QWidget):
          widget_width, widget_height = self.width(), self.height()
 
          if canvas_width <= 0 or canvas_height <= 0 or widget_width <= 0 or widget_height <= 0:
-              painter.fillRect(event.rect(), Qt.white)
               return
 
          pixmap = QPixmap()
@@ -79,13 +144,30 @@ class InkCanvasWidget(QWidget):
              pixmap = convert_cv_to_qt(canvas_data)
          except Exception as e:
              print(f"Error converting canvas data to QPixmap for painting: {e}")
-             painter.fillRect(event.rect(), Qt.white)
-             painter.drawText(event.rect(), Qt.AlignCenter, "画布绘制错误!")
+             painter.drawText(self.rect(), Qt.AlignCenter, "画布绘制错误!")
              return
 
-         painter.drawPixmap(self.rect(), pixmap, pixmap.rect())
+         # Source rect is the entire pixmap
+         # --- FIX: Convert source_rect to QRectF ---
+         source_rect_f = QRectF(pixmap.rect())
+
+         # Target rect on the widget is determined by pan offset and scaled canvas size
+         scaled_width = canvas_width * self._zoom_factor
+         scaled_height = canvas_height * self._zoom_factor
+         target_rect_f = QRectF(self._pan_offset_widget.x(), self._pan_offset_widget.y(), scaled_width, scaled_height)
+
+         # --- FIX: Use QRectF for both target and source ---
+         painter.drawPixmap(target_rect_f, pixmap, source_rect_f)
 
     def mousePressEvent(self, event: QMouseEvent):
+        if self._lienzo is not None and (event.button() == Qt.MidButton or event.button() == Qt.RightButton):
+            self._is_panning = True
+            self._pan_start_widget_pos = event.pos()
+            self._pan_start_offset = self._pan_offset_widget
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+
         if event.button() != Qt.LeftButton or self._lienzo is None:
              super().mousePressEvent(event)
              return
@@ -103,7 +185,6 @@ class InkCanvasWidget(QWidget):
 
         canvas_point = self._widget_to_canvas(self._last_point_widget)
 
-        # Prepare params based on current tool
         params_for_engine = self._current_brush_params.copy()
         params_for_engine['is_eraser'] = (self._current_tool == "eraser")
 
@@ -112,7 +193,7 @@ class InkCanvasWidget(QWidget):
                  self._lienzo,
                  canvas_point,
                  canvas_point,
-                 params_for_engine # Pass tool-modified params
+                 params_for_engine
             )
         except Exception as e:
              print(f"Error in apply_basic_brush_stroke_segment during mousePress: {e}")
@@ -130,6 +211,36 @@ class InkCanvasWidget(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        if self._is_panning:
+            if self._pan_start_widget_pos is None or self._pan_start_offset is None or self._lienzo is None:
+                 self._is_panning = False
+                 self.set_current_tool(self._current_tool)
+                 super().mouseMoveEvent(event)
+                 return
+
+            delta_widget = event.pos() - self._pan_start_widget_pos
+            new_pan_offset_widget = self._pan_start_offset + delta_widget
+
+            canvas_width, canvas_height = self._lienzo.get_size()
+            widget_width, widget_height = self.width(), self.height()
+
+            scaled_canvas_width = canvas_width * self._zoom_factor
+            scaled_canvas_height = canvas_height * self._zoom_factor
+
+            max_px = max(0, int(widget_width - scaled_canvas_width))
+            max_py = max(0, int(widget_height - scaled_canvas_height))
+            min_px = min(0, int(widget_width - scaled_canvas_width))
+            min_py = min(0, int(widget_height - scaled_canvas_height))
+
+            clamped_pan_x = np.clip(new_pan_offset_widget.x(), min_px, max_px)
+            clamped_pan_y = np.clip(new_pan_offset_widget.y(), min_py, max_py)
+
+            self._pan_offset_widget = QPoint(int(clamped_pan_x), int(clamped_pan_y))
+
+            self.update()
+            event.accept()
+            return
+
         if not self._is_drawing or self._lienzo is None or self._last_point_widget is None or not (event.buttons() & Qt.LeftButton) or 'type' not in self._current_brush_params:
             super().mouseMoveEvent(event)
             return
@@ -143,7 +254,6 @@ class InkCanvasWidget(QWidget):
              self._last_point_widget = current_point_widget
              return
 
-        # Prepare params based on current tool
         params_for_engine = self._current_brush_params.copy()
         params_for_engine['is_eraser'] = (self._current_tool == "eraser")
 
@@ -152,7 +262,7 @@ class InkCanvasWidget(QWidget):
                  self._lienzo,
                  canvas_last_point,
                  canvas_current_point,
-                 params_for_engine # Pass tool-modified params
+                 params_for_engine
             )
         except Exception as e:
              print(f"Error in apply_basic_brush_stroke_segment during mouseMove: {e}")
@@ -175,11 +285,24 @@ class InkCanvasWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if self._is_panning:
+            self._is_panning = False
+            self.set_current_tool(self._current_tool)
+            event.accept()
+            return
+
         if not self._is_drawing or event.button() != Qt.LeftButton or self._lienzo is None:
              super().mouseReleaseEvent(event)
              return
 
-        # Prepare params based on current tool for finalization
+        if 'wetness' not in self._current_brush_params or 'size' not in self._current_brush_params:
+            print("Warning: Missing brush parameters for finalization. Skipping finalize_stroke.")
+            self._is_drawing = False
+            self._last_point_widget = None
+            self._stroke_inked_region_canvas = QRect()
+            super().mouseReleaseEvent(event)
+            return
+
         params_for_engine = self._current_brush_params.copy()
         params_for_engine['is_eraser'] = (self._current_tool == "eraser")
 
@@ -194,7 +317,7 @@ class InkCanvasWidget(QWidget):
                            self._lienzo,
                            canvas_last_point,
                            canvas_current_point,
-                           params_for_engine # Pass tool-modified params
+                           params_for_engine
                       )
                       if inked_rect_canvas.isValid() and not inked_rect_canvas.isNull():
                           if self._stroke_inked_region_canvas.isNull():
@@ -205,93 +328,126 @@ class InkCanvasWidget(QWidget):
                  except Exception as e:
                       print(f"Error in apply_basic_brush_stroke_segment during mouseRelease last segment: {e}")
 
-        self._finalize_current_stroke(params_for_engine) # Pass params to finalization
+        self._finalize_current_stroke(params_for_engine)
 
         self._is_drawing = False
         self._last_point_widget = None
         self._stroke_inked_region_canvas = QRect()
 
-        # Emit signal to indicate a stroke is finished for history saving
         self.strokeFinished.emit()
 
         super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event):
+        """Handles mouse wheel for zooming."""
+        if self._lienzo is None:
+             super().wheelEvent(event)
+             return
+
+        angle_delta = event.angleDelta().y()
+
+        if angle_delta != 0:
+            zoom_step_factor = 1.1
+            new_zoom_factor = self._zoom_factor
+
+            if angle_delta > 0:
+                new_zoom_factor *= zoom_step_factor
+            else:
+                new_zoom_factor /= zoom_step_factor
+
+            new_zoom_factor = max(0.01, min(new_zoom_factor, 100.0))
+
+            if new_zoom_factor != self._zoom_factor:
+                mouse_pos_widget = event.pos()
+                canvas_pos_before_zoom = self._widget_to_canvas(mouse_pos_widget)
+
+                if canvas_pos_before_zoom == QPoint(-1, -1):
+                     widget_center_widget = QPoint(self.width() // 2, self.height() // 2)
+                     canvas_pos_before_zoom = self._widget_to_canvas(widget_center_widget)
+                     if canvas_pos_before_zoom == QPoint(-1, -1):
+                          canvas_pos_before_zoom = QPoint(0,0)
+
+                new_pan_offset_widget_x = mouse_pos_widget.x() - canvas_pos_before_zoom.x() * new_zoom_factor
+                new_pan_offset_widget_y = mouse_pos_widget.y() - canvas_pos_before_zoom.y() * new_zoom_factor
+
+                self.set_zoom_pan(new_zoom_factor, QPoint(int(new_pan_offset_widget_x), int(new_pan_offset_widget_y)))
+
+            event.accept()
+        else:
+             super().wheelEvent(event)
+
+    def resizeEvent(self, event):
+        """Handles widget resizing. Readjust pan offset if needed."""
+        old_width = event.oldSize().width()
+        old_height = event.oldSize().height()
+        new_width = event.size().width()
+        new_height = event.size().height()
+
+        if new_width > 0 and new_height > 0 and self._lienzo is not None:
+             self.set_zoom_pan(self._zoom_factor, self._pan_offset_widget)
+
+        super().resizeEvent(event)
 
     def _finalize_current_stroke(self, params_for_engine: dict):
         if self._lienzo is None or self._stroke_inked_region_canvas.isNull() or not self._stroke_inked_region_canvas.isValid():
              return
 
         try:
-            # finalize_stroke internally checks for 'is_eraser'
             updated_canvas_rect = finalize_stroke(
                  self._lienzo,
                  self._stroke_inked_region_canvas,
-                 params_for_engine # Pass tool-modified params
+                 params_for_engine
             )
         except Exception as e:
              print(f"Error during stroke finalization: {e}")
              updated_canvas_rect = self._stroke_inked_region_canvas.normalized()
              QMessageBox.critical(self, "操作出错", f"完成操作时发生错误: {e}")
 
-        # Request FULL repaint after finalization
-        # Even if finalize_stroke returns an empty rect (e.g., eraser with wetness 0),
-        # we need to repaint the area that was modified in the segment calls.
-        # However, the stroke_inked_region_canvas should cover the modified area before finalize.
-        # Let's just repaint the entire canvas for simplicity and robustness with Undo/Redo state loading.
         self.update()
 
-    # Coordinate transformation helpers
+    # Coordinate transformation helpers, updated to use zoom and pan
     def _widget_to_canvas(self, widget_point: QPoint) -> QPoint:
-        """Converts a point from widget coordinates to canvas data coordinates."""
-        if self._lienzo is None or self.width() <= 0 or self.height() <= 0:
+        """Converts a point from widget coordinates to canvas data coordinates, considering zoom and pan."""
+        if self._lienzo is None or self._zoom_factor <= 0 or self.width() <= 0 or self.height() <= 0:
              return QPoint(-1, -1)
+
+        relative_widget_x = widget_point.x() - self._pan_offset_widget.x()
+        relative_widget_y = widget_point.y() - self._pan_offset_widget.y()
+
+        canvas_x = int(relative_widget_x / self._zoom_factor)
+        canvas_y = int(relative_widget_y / self._zoom_factor)
 
         canvas_width, canvas_height = self._lienzo.get_size()
-        widget_width, widget_height = self.width(), self.height()
-
-        if widget_width <= 0 or widget_height <= 0 or canvas_width <= 0 or canvas_height <= 0:
+        if canvas_width <= 0 or canvas_height <= 0:
              return QPoint(-1, -1)
 
-        canvas_x = int(widget_point.x() * canvas_width / widget_width)
-        canvas_y = int(widget_point.y() * canvas_height / widget_height)
-
-        canvas_x = max(0, min(canvas_x, canvas_width - 1))
-        canvas_y = max(0, min(canvas_y, canvas_height - 1))
+        if not (0 <= canvas_x < canvas_width and 0 <= canvas_y < canvas_height):
+             return QPoint(-1, -1)
 
         return QPoint(canvas_x, canvas_y)
 
     def _canvas_to_widget_rect(self, canvas_rect: QRect) -> QRect:
-        """Converts a rectangle from canvas data coordinates to widget coordinates."""
-        if self._lienzo is None or self.width() <= 0 or self.height() <= 0 or canvas_rect.isNull():
+        """Converts a rectangle from canvas data coordinates to widget coordinates, considering zoom and pan."""
+        if self._lienzo is None or self._zoom_factor <= 0 or canvas_rect.isNull():
              return QRect()
 
-        canvas_width, canvas_height = self._lienzo.get_size()
-        widget_width, widget_height = self.width(), self.height()
+        widget_x1 = int(canvas_rect.left() * self._zoom_factor + self._pan_offset_widget.x())
+        widget_y1 = int(canvas_rect.top() * self._zoom_factor + self._pan_offset_widget.y())
 
-        if widget_width <= 0 or widget_height <= 0 or canvas_width <= 0 or canvas_height <= 0:
-             return QRect()
-
-        widget_x1 = int(canvas_rect.left() * widget_width / canvas_width)
-        widget_y1 = int(canvas_rect.top() * widget_height / canvas_height)
-
-        widget_x2 = int(canvas_rect.right() * widget_width / canvas_width)
-        widget_y2 = int(canvas_rect.bottom() * widget_height / canvas_height)
-
-        widget_x1 = max(0, widget_x1)
-        widget_y1 = max(0, widget_y1)
-        widget_x2 = min(widget_width, widget_x2)
-        widget_y2 = min(widget_height, widget_y2)
+        widget_x2 = int(canvas_rect.right() * self._zoom_factor + self._pan_offset_widget.x())
+        widget_y2 = int(canvas_rect.bottom() * self._zoom_factor + self._pan_offset_widget.y())
 
         widget_w = max(0, widget_x2 - widget_x1)
         widget_h = max(0, widget_y2 - widget_y1)
 
-        if canvas_rect.width() > 0 and widget_w == 0 and widget_x1 < widget_width: widget_w = 1
-        if canvas_rect.height() > 0 and widget_h == 0 and widget_y1 < widget_height: widget_h = 1
+        if canvas_rect.width() > 0 and widget_w == 0 and widget_x1 < self.width() and widget_x2 > 0 : widget_w = max(1, int(canvas_rect.width() * self._zoom_factor))
+        if canvas_rect.height() > 0 and widget_h == 0 and widget_y1 < self.height() and widget_y2 > 0 : widget_h = max(1, int(canvas_rect.height() * self._zoom_factor))
 
         return QRect(widget_x1, widget_y1, widget_w, widget_h)
 
     def _widget_to_canvas_rect(self, widget_rect: QRect) -> QRect:
-        """Converts a rectangle from widget coordinates to canvas data coordinates."""
-        if self._lienzo is None or self.width() <= 0 or self.height() <= 0 or widget_rect.isNull():
+        """Converts a rectangle from widget coordinates to canvas data coordinates, considering zoom and pan."""
+        if self._lienzo is None or self._zoom_factor <= 0 or widget_rect.isNull():
              return QRect()
 
         canvas_width, canvas_height = self._lienzo.get_size()
@@ -300,24 +456,29 @@ class InkCanvasWidget(QWidget):
         if widget_width <= 0 or widget_height <= 0 or canvas_width <= 0 or canvas_height <= 0:
              return QRect()
 
-        canvas_x1 = int(widget_rect.left() * canvas_width / widget_width)
-        canvas_y1 = int(widget_rect.top() * canvas_height / widget_height)
+        canvas_x1_float = (widget_rect.left() - self._pan_offset_widget.x()) / self._zoom_factor
+        canvas_y1_float = (widget_rect.top() - self._pan_offset_widget.y()) / self._zoom_factor
 
-        canvas_x2 = int(widget_rect.right() * canvas_width / widget_width)
-        canvas_y2 = int(widget_rect.bottom() * canvas_height / widget_height)
+        canvas_x2_float = (widget_rect.right() - self._pan_offset_widget.x()) / self._zoom_factor
+        canvas_y2_float = (widget_rect.bottom() - self._pan_offset_widget.y()) / self._zoom_factor
 
-        canvas_x1 = max(0, canvas_x1)
-        canvas_y1 = max(0, canvas_y1)
-        canvas_x2 = min(canvas_width, canvas_x2)
-        canvas_y2 = min(canvas_height, canvas_y2)
+        canvas_x1 = int(canvas_x1_float)
+        canvas_y1 = int(canvas_y1_float)
+
+        canvas_x2 = int(canvas_x2_float)
+        canvas_y2 = int(canvas_y2_float)
 
         canvas_w = max(0, canvas_x2 - canvas_x1)
         canvas_h = max(0, canvas_y2 - canvas_y1)
 
-        if widget_rect.width() > 0 and canvas_w == 0 and canvas_x1 < canvas_width: canvas_w = 1
-        if widget_rect.height() > 0 and canvas_h == 0 and canvas_y1 < canvas_height: canvas_h = 1
+        if widget_rect.width() > 0 and canvas_w == 0: canvas_w = max(1, int(widget_rect.width()/self._zoom_factor))
+        if widget_rect.height() > 0 and canvas_h == 0: canvas_h = max(1, int(widget_rect.height()/self._zoom_factor))
 
-        return QRect(canvas_x1, canvas_y1, canvas_w, canvas_h)
+        temp_rect = QRect(canvas_x1, canvas_y1, canvas_w, canvas_h)
+
+        clamped_rect = temp_rect.intersected(QRect(0, 0, canvas_width, canvas_height))
+
+        return clamped_rect
 
     # Additional Canvas Operations
     def load_image_into_canvas(self, image_data: np.ndarray):
@@ -335,7 +496,9 @@ class InkCanvasWidget(QWidget):
              print(f"Error setting image data to lienzo: {e}")
              QMessageBox.critical(self, "加载出错", f"将图片数据载入画布时发生错误: {e}")
              return
-
+        self._zoom_factor = 1.0
+        self._pan_offset_widget = QPoint(0, 0)
+        self.set_zoom_pan(self._zoom_factor, self._pan_offset_widget)
         self.update()
         self.canvas_content_changed.emit()
 
@@ -344,3 +507,10 @@ class InkCanvasWidget(QWidget):
         if self._lienzo:
             return self._lienzo.get_canvas_data().copy()
         return np.array([], dtype=np.uint8)
+
+    def get_canvas_size(self) -> QSize:
+         """Returns the canvas size as a QSize."""
+         if self._lienzo:
+              w, h = self._lienzo.get_size()
+              return QSize(w, h)
+         return QSize(0, 0)

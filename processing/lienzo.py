@@ -69,6 +69,7 @@ class Lienzo:
     def crop_area(self, rect: tuple[int, int, int, int]) -> np.ndarray:
         """Crops a rectangular region from the canvas, returns a copy."""
         x, y, w, h = rect
+        # These are exclusive upper bounds
         x1 = max(0, x)
         y1 = max(0, y)
         x2 = min(self._width, x + w)
@@ -78,6 +79,7 @@ class Lienzo:
             return np.empty((0,0), dtype=np.uint8)
 
         if self._canvas_data is not None:
+            # Numpy slice [y1:y2, x1:x2] gives shape (y2-y1, x2-x1)
             return self._canvas_data[y1:y2, x1:x2].copy()
         else:
              print("Warning: Cannot crop area, canvas_data is None.")
@@ -92,6 +94,7 @@ class Lienzo:
              return
 
         x, y, w, h = rect
+        # These are exclusive upper bounds
         x1 = max(0, x)
         y1 = max(0, y)
         x2 = min(self._width, x + w)
@@ -100,7 +103,10 @@ class Lienzo:
         target_h = y2 - y1
         target_w = x2 - x1
 
+        # --- FIX: Corrected shape comparison ---
+        # Expected shape is (height, width), i.e., (target_h, target_w)
         if target_h <= 0 or target_w <= 0 or data.shape[:2] != (target_h, target_w):
+             print(f"Warning: Paste data shape {data.shape[:2]} mismatch with target region size ({target_w}x{target_h}). Skipping paste.")
              return
 
         if data.dtype != np.uint8:

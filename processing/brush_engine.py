@@ -6,20 +6,20 @@ from PyQt5.QtCore import QPoint, QRect
 import math
 import random
 import os
-# Added missing import:
 from processing.lienzo import Lienzo
 
 _brush_shapes = {}
 _brush_shape_folder = os.path.join(os.path.dirname(__file__), '..', 'resources')
 
 def load_brush_shapes():
-    """Loads brush shape images."""
     global _brush_shapes
     global _brush_shape_folder
 
     shape_files = {
         'round': 'brush_round.png',
         'flat': 'brush_flat.png',
+        'dry': 'brush_dry.png',
+        'tapered': 'brush_tapered.png',
     }
 
     if not os.path.exists(_brush_shape_folder):
@@ -28,7 +28,7 @@ def load_brush_shapes():
               _brush_shapes[name] = None
     else:
         for name, filename in shape_files.items():
-            filepath = os.path.join(_brush_shape_folder, filename)
+            filepath = os.path.join(os.path.join(os.path.dirname(__file__), '..', 'resources'), filename) # Use absolute path derived from brush_engine location
             if os.path.exists(filepath):
                 try:
                     shape_img = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
@@ -87,7 +87,7 @@ def load_brush_shapes():
         _brush_shapes['flat'] = fallback_opacity
 
 def get_available_brush_types() -> list[str]:
-    """Returns a list of names of successfully loaded or synthesized brush types."""
+    """Returns successfully loaded brush types."""
     available_types = [name for name, shape in _brush_shapes.items() if shape is not None and shape.size > 0]
     if 'round' in _brush_shapes and _brush_shapes['round'] is not None and _brush_shapes['round'].size > 0 and 'round' not in available_types:
          available_types.insert(0, 'round')
@@ -140,9 +140,10 @@ def _apply_ink_to_local_area(
     p1_local: QPoint,
     p2_local: QPoint,
     brush_params: dict,
-    area_noise_texture: np.ndarray
+    area_noise_texture: np.ndarray,
+    num_interpolation_steps: int
 ):
-     """Applies ink effects (density, feibai, brush shape) to a local uint8 canvas area."""
+     """Applies ink or eraser effects to a local uint8 canvas area."""
      if local_area_uint8 is None or local_area_uint8.size == 0: return
      area_height, area_width = local_area_uint8.shape[:2]
      if area_width <= 0 or area_height <= 0: return
@@ -154,9 +155,7 @@ def _apply_ink_to_local_area(
           area_noise_texture = np.ones_like(local_area_uint8, dtype=np.float32) * 0.5
 
      brush_size = max(1, int(brush_params.get('size', 15)))
-     # Density controls opacity for both ink and eraser
      density = np.clip(float(brush_params.get('density', 60)), 0.0, 100.0)
-     # Feibai applies to both ink and eraser
      feibai = np.clip(float(brush_params.get('feibai', 20)), 0.0, 100.0)
      brush_type = brush_params.get('type', 'round')
 
@@ -169,8 +168,7 @@ def _apply_ink_to_local_area(
           angle_rad = math.atan2(dy_local, dx_local)
           angle_degrees = math.degrees(angle_rad)
 
-     dist_local = math.sqrt(dx_local**2 + dy_local**2)
-     num_steps = max(int(dist_local), 1)
+     num_steps = max(1, num_interpolation_steps)
 
      for i in range(num_steps + 1):
          t = float(i) / num_steps if num_steps > 0 else 0.0
@@ -223,17 +221,11 @@ def _apply_ink_to_local_area(
          canvas_slice_float = current_local_area_overlap_slice.astype(np.float32)
 
          if not is_eraser:
-             # Apply ink (darken towards 0)
              target_shade_float = 255.0 * (1.0 - effective_pixel_opacity)
              blended_slice_float = np.minimum(canvas_slice_float, target_shade_float)
          else:
-             # Apply eraser (lighten towards 255)
-             # Target shade for eraser is 255 (white). Opacity means how much of 255 is applied.
-             # Standard alpha blending formula: result = (1-alpha)*foreground + alpha*background
-             # Here: result = (1 - effective_opacity) * existing_canvas + effective_opacity * 255
-             # Use float arithmetic for blending
              blended_slice_float = (1.0 - effective_pixel_opacity) * canvas_slice_float + effective_pixel_opacity * 255.0
-             blended_slice_float = np.clip(blended_slice_float, 0.0, 255.0) # Ensure values are in range
+             blended_slice_float = np.clip(blended_slice_float, 0.0, 255.0)
 
          current_local_area_overlap_slice[:] = blended_slice_float.astype(np.uint8)
 
@@ -249,25 +241,45 @@ def apply_basic_brush_stroke_segment(
     if canvas_width <= 0 or canvas_height <= 0: return QRect()
 
     brush_size = max(1, int(brush_params.get('size', 15)))
-    brush_radius = brush_size // 2
+    brush_radius = brush_size // 2 # This is an integer radius
 
-    min_x = min(p1_canvas.x(), p2_canvas.x())
-    max_x = max(p1_canvas.x(), p2_canvas.x())
-    min_y = min(p1_canvas.y(), p2_canvas.y())
-    max_y = max(p1_canvas.y(), p2_canvas.y())
+    # Calculate number of interpolation steps based on CANVAS distance
+    dx_canvas = p2_canvas.x() - p1_canvas.x()
+    dy_canvas = p2_canvas.y() - p1_canvas.y()
+    dist_canvas = math.sqrt(dx_canvas**2 + dy_canvas**2)
+    num_interpolation_steps = max(int(dist_canvas), 1)
 
-    process_x1 = min_x - brush_radius
-    process_y1 = min_y - brush_radius
-    process_x2_idx = max_x + brush_radius
-    process_y2_idx = max_y + brush_radius
+    # --- Recalculate processing area using inclusive start and EXCLUSIVE end ---
+    # We need the rectangle that spans from (min_x - radius, min_y - radius)
+    # up to (max_x + radius + 1, max_y + radius + 1) in exclusive coordinates on canvas
+    # taking into account P1 and P2.
 
+    min_x_pt = min(p1_canvas.x(), p2_canvas.x())
+    max_x_pt = max(p1_canvas.x(), p2_canvas.x())
+    min_y_pt = min(p1_canvas.y(), p2_canvas.y())
+    max_y_pt = max(p1_canvas.y(), p2_canvas.y())
+
+    # Calculate the inclusive start coordinates [x1, y1]
+    process_x1 = min_x_pt - brush_radius
+    process_y1 = min_y_pt - brush_radius
+
+    # Calculate the inclusive end coordinates [x2_incl, y2_incl]
+    process_x2_incl = max_x_pt + brush_radius
+    process_y2_incl = max_y_pt + brush_radius
+
+    # Convert inclusive end to exclusive end [x2_excl, y2_excl] used for slice [x1:x2]
+    process_x2_excl = process_x2_incl + 1
+    process_y2_excl = process_y2_incl + 1
+
+    # Clamp exclusive coordinates to canvas bounds [0, canvas_size]
     process_x1 = max(0, process_x1)
     process_y1 = max(0, process_y1)
-    process_x2_idx = min(canvas_width - 1, process_x2_idx)
-    process_y2_idx = min(canvas_height - 1, process_y2_idx)
+    process_x2_excl = min(canvas_width, process_x2_excl)
+    process_y2_excl = min(canvas_height, process_y2_excl)
 
-    process_w = max(0, process_x2_idx - process_x1 + 1)
-    process_h = max(0, process_y2_idx - process_y1 + 1)
+    # Calculate width and height using the clamped exclusive coordinates
+    process_w = max(0, process_x2_excl - process_x1)
+    process_h = max(0, process_y2_excl - process_y1)
 
     process_rect_canvas = QRect(process_x1, process_y1, process_w, process_h)
 
@@ -275,6 +287,7 @@ def apply_basic_brush_stroke_segment(
         return QRect()
 
     try:
+        # Crop area using the calculated exclusive rectangle
         local_canvas_area_uint8 = lienzo.crop_area((process_rect_canvas.x(), process_rect_canvas.y(),
                                                   process_rect_canvas.width(), process_rect_canvas.height()))
         if local_canvas_area_uint8 is None or local_canvas_area_uint8.size == 0:
@@ -284,15 +297,22 @@ def apply_basic_brush_stroke_segment(
         print(f"Error cropping Lienzo for segment: {e}. Skipping ink application.")
         return QRect()
 
+    # Validate that the shape of the cropped data matches the size of the calculated rectangle
+    if local_canvas_area_uint8.shape[:2] != (process_rect_canvas.height(), process_rect_canvas.width()):
+         print(f"FATAL ERROR: Cropped area shape mismatch! Expected ({process_rect_canvas.height(), process_rect_canvas.width()}), got {local_canvas_area_uint8.shape[:2]}. Skipping ink application.")
+         return QRect() # Indicate failure if crop shape doesn't match calculated rect
+
     try:
+        # Noise texture must match the shape of the *cropped* local area
         area_height, area_width = local_canvas_area_uint8.shape[:2]
         noise_texture_area = np.random.rand(area_height, area_width).astype(np.float32)
     except Exception as e:
          print(f"Error generating noise texture: {e}. Proceeding without feibai texture.")
          noise_texture_area = np.ones_like(local_canvas_area_uint8, dtype=np.float32) * 0.5
 
-    p1_local = QPoint(p1_canvas.x() - process_rect_canvas.x(), p1_canvas.y() - process_rect_canvas.y())
-    p2_local = QPoint(p2_canvas.x() - process_rect_canvas.x(), p2_canvas.y() - process_rect_canvas.y())
+    # Points relative to the local area origin (inclusive start)
+    p1_local = QPoint(p1_canvas.x() - process_x1, p1_canvas.y() - process_y1) # Use process_x1, process_y1 (inclusive start)
+    p2_local = QPoint(p2_canvas.x() - process_x1, p2_canvas.y() - process_y1)
 
     try:
         _apply_ink_to_local_area(
@@ -300,24 +320,23 @@ def apply_basic_brush_stroke_segment(
             p1_local,
             p2_local,
             brush_params,
-            noise_texture_area
+            noise_texture_area,
+            num_interpolation_steps
         )
     except Exception as e:
          print(f"Error applying ink effects to local area: {e}.")
          return QRect()
 
+    # Paste area using the same calculated exclusive rectangle
     paste_rect_tuple = (process_rect_canvas.x(), process_rect_canvas.y(),
                         process_rect_canvas.width(), process_rect_canvas.height())
 
-    if local_canvas_area_uint8.shape == (process_rect_canvas.height(), process_rect_canvas.width()):
-         try:
-             lienzo.paste_area(paste_rect_tuple, local_canvas_area_uint8)
-             return process_rect_canvas
-         except Exception as e:
-             print(f"Error pasting modified area: {e}. Skipping paste.")
-             return QRect()
-    else:
-        print(f"Warning: Modified local area shape mismatch {local_canvas_area_uint8.shape} vs paste rect shape {(process_rect_canvas.height(), process_rect_canvas.width())}. Skipping paste.")
+    # Shape consistency check is now done inside paste_area as well
+    try:
+        lienzo.paste_area(paste_rect_tuple, local_canvas_area_uint8)
+        return process_rect_canvas
+    except Exception as e:
+        print(f"Error pasting modified area: {e}. Skipping paste.")
         return QRect()
 
 def finalize_stroke(
@@ -325,13 +344,19 @@ def finalize_stroke(
     stroke_inked_region_canvas: QRect,
     brush_params: dict
 ) -> QRect:
-    """Finalizes a stroke by applying localized diffusion (blur)."""
+    """Finalizes a stroke by applying localized diffusion (blur) for ink, or doing nothing for eraser."""
     is_eraser = brush_params.get('is_eraser', False)
 
     if is_eraser:
-         # Eraser strokes do not get diffusion
-         # The relevant area for updating the UI is just the inked region itself now
-         return stroke_inked_region_canvas.normalized()
+         # Eraser strokes do not get diffusion.
+         # Return the region that was directly modified by the eraser.
+         # This is effectively stroke_inked_region_canvas, clamped to canvas bounds.
+         # Need to clamp it properly for the update area.
+         canvas_width, canvas_height = lienzo.get_size()
+         if canvas_width <= 0 or canvas_height <= 0: return QRect()
+         clamped_rect = stroke_inked_region_canvas.intersected(QRect(0, 0, canvas_width, canvas_height))
+         return clamped_rect.normalized() # Return normalized clamped rect
+
     else:
          # Ink strokes get diffusion
          final_updated_area_canvas = apply_localized_blur(
@@ -365,18 +390,28 @@ def apply_localized_blur(
     estimated_blur_radius = max(estimated_blur_radius, brush_size // 2)
     estimated_blur_radius = max(estimated_blur_radius, 5)
 
+    # --- Recalculate processing area for blur using inclusive start and EXCLUSIVE end ---
+    # Expanded area around the inked region
     process_x1 = canvas_rect_to_blur.left() - estimated_blur_radius
     process_y1 = canvas_rect_to_blur.top() - estimated_blur_radius
-    process_x2_idx = canvas_rect_to_blur.right() + estimated_blur_radius -1
-    process_y2_idx = canvas_rect_to_blur.bottom() + estimated_blur_radius -1
 
+    # Calculate the inclusive end coordinates
+    process_x2_incl = canvas_rect_to_blur.right() + estimated_blur_radius -1 # right() is exclusive, so inclusive end is right-1 + radius
+    process_y2_incl = canvas_rect_to_blur.bottom() + estimated_blur_radius -1 # bottom() is exclusive, so inclusive end is bottom-1 + radius
+
+    # Convert inclusive end to exclusive end needed for slice [x1:x2]
+    process_x2_excl = process_x2_incl + 1
+    process_y2_excl = process_y2_incl + 1
+
+    # Clamp exclusive coordinates to canvas bounds [0, canvas_size]
     process_x1 = max(0, process_x1)
     process_y1 = max(0, process_y1)
-    process_x2_idx = min(canvas_width - 1, process_x2_idx)
-    process_y2_idx = min(canvas_height - 1, process_y2_idx)
+    process_x2_excl = min(canvas_width, process_x2_excl)
+    process_y2_excl = min(canvas_height, process_y2_excl)
 
-    process_w = max(0, process_x2_idx - process_x1 + 1)
-    process_h = max(0, process_y2_idx - process_y1 + 1)
+    # Calculate width and height using clamped *exclusive* coordinates
+    process_w = max(0, process_x2_excl - process_x1)
+    process_h = max(0, process_y2_excl - process_y1)
 
     process_rect_canvas = QRect(process_x1, process_y1, process_w, process_h)
 
@@ -384,14 +419,21 @@ def apply_localized_blur(
         return QRect()
 
     try:
+        # Crop area using the calculated exclusive rectangle
         processing_area_uint8 = lienzo.crop_area((process_rect_canvas.x(), process_rect_canvas.y(),
                                                   process_rect_canvas.width(), process_rect_canvas.height()))
+
         if processing_area_uint8 is None or processing_area_uint8.size == 0:
              print("Warning: Cropping area for blur failed or returned empty.")
              return QRect()
     except Exception as e:
         print(f"Error cropping Lienzo for blur: {e}. Skipping blur.")
         return QRect()
+
+    # Validate that the shape of the cropped data matches the size of the calculated rectangle
+    if processing_area_uint8.shape[:2] != (process_rect_canvas.height(), process_rect_canvas.width()):
+         print(f"FATAL ERROR: Cropped area for blur shape mismatch! Expected ({process_rect_canvas.height(), process_rect_canvas.width()}), got {processing_area_uint8.shape[:2]}. Skipping blur.")
+         return QRect() # Indicate failure
 
     original_processing_area_uint8 = processing_area_uint8.copy()
 
@@ -402,22 +444,27 @@ def apply_localized_blur(
         processed_area_blurred = cv2.bilateralFilter(processing_area_uint8, 0, float(sigma_color), float(base_sigma_space))
     except Exception as e:
          print(f"Error during cv2.bilateralFilter: {e}. Skipping blur.")
-         return QRect()
+         # Even if blur fails, try to paste the original cropped area back
+         paste_rect_tuple = (process_rect_canvas.x(), process_rect_canvas.y(),
+                            process_rect_canvas.width(), process_rect_canvas.height())
+         try:
+             lienzo.paste_area(paste_rect_tuple, original_processing_area_uint8)
+             return process_rect_canvas # Return the area that *should* have been modified
+         except Exception as paste_e:
+             print(f"Error pasting original area after blur error: {paste_e}.")
+             return QRect() # Indicate total failure
 
     blended_area_uint8 = np.minimum(original_processing_area_uint8, processed_area_blurred)
 
     paste_rect_tuple = (process_rect_canvas.x(), process_rect_canvas.y(),
                         process_rect_canvas.width(), process_rect_canvas.height())
 
-    if blended_area_uint8.shape == (process_rect_canvas.height(), process_rect_canvas.width()):
-         try:
-             lienzo.paste_area(paste_rect_tuple, blended_area_uint8)
-             return process_rect_canvas
-         except Exception as e:
-             print(f"Error pasting blended area: {e}. Skipping paste.")
-             return QRect()
-    else:
-        print(f"Warning: Blended area shape mismatch {blended_area_uint8.shape} vs paste rect shape {(process_rect_canvas.height(), process_rect_canvas.width())}. Skipping paste.")
+    # Shape consistency checked inside paste_area
+    try:
+        lienzo.paste_area(paste_rect_tuple, blended_area_uint8)
+        return process_rect_canvas
+    except Exception as e:
+        print(f"Error pasting blended area: {e}. Skipping paste.")
         return QRect()
 
 load_brush_shapes()
