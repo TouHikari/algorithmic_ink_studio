@@ -39,8 +39,6 @@ class ControlPanel(QWidget):
 
         self.main_layout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        # Initial params read and signals connected handled by set_available_brush_types in MainWindow
-
     def _create_parameter_control(self, label_text: str, min_val: int, max_val: int, default_val: int, param_name: str, parent_layout: QVBoxLayout):
         """Helper method to create a parameter control (Slider + SpinBox)."""
         hbox = QHBoxLayout()
@@ -83,7 +81,6 @@ class ControlPanel(QWidget):
             self._brush_type_combo.addItem("N/A")
             self._brush_type_combo.setEnabled(False)
             self._current_params['type'] = None
-            print("Warning: No available brush types provided.")
             return
 
         self._brush_type_combo.setEnabled(True)
@@ -102,7 +99,6 @@ class ControlPanel(QWidget):
              pass
         self._brush_type_combo.currentTextChanged.connect(lambda text: self._on_parameter_changed('type', text))
 
-        # Read all parameters (including initial type) and emit the first signal
         self._read_all_parameters()
         self.parameters_changed.emit(self._current_params.copy())
 
@@ -118,10 +114,6 @@ class ControlPanel(QWidget):
         """Internal slot: Updates param dict and emits signal."""
         self._current_params[param_name] = value
         self.parameters_changed.emit(self._current_params.copy())
-
-    def _connect_signals(self):
-        # Parameter change signals connected in _create_parameter_control and set_available_brush_types
-        pass
 
     def get_current_parameters(self) -> dict:
         """Returns current brush parameter values."""

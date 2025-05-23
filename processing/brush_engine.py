@@ -6,14 +6,14 @@ from PyQt5.QtCore import QPoint, QRect
 import math
 import random
 import os
-
+# Added missing import:
 from processing.lienzo import Lienzo
 
 _brush_shapes = {}
 _brush_shape_folder = os.path.join(os.path.dirname(__file__), '..', 'resources')
 
 def load_brush_shapes():
-    """Loads brush shape images from the resources folder."""
+    """Loads brush shape images."""
     global _brush_shapes
     global _brush_shape_folder
 
@@ -147,12 +147,16 @@ def _apply_ink_to_local_area(
      area_height, area_width = local_area_uint8.shape[:2]
      if area_width <= 0 or area_height <= 0: return
 
+     is_eraser = brush_params.get('is_eraser', False)
+
      if area_noise_texture is None or area_noise_texture.shape != local_area_uint8.shape:
           print("Error: Noise texture slice has wrong shape or is None. Feibai might not apply correctly.")
           area_noise_texture = np.ones_like(local_area_uint8, dtype=np.float32) * 0.5
 
      brush_size = max(1, int(brush_params.get('size', 15)))
+     # Density controls opacity for both ink and eraser
      density = np.clip(float(brush_params.get('density', 60)), 0.0, 100.0)
+     # Feibai applies to both ink and eraser
      feibai = np.clip(float(brush_params.get('feibai', 20)), 0.0, 100.0)
      brush_type = brush_params.get('type', 'round')
 
@@ -216,10 +220,21 @@ def _apply_ink_to_local_area(
          effective_pixel_opacity = base_density_opacity * brush_slice_opacity * feibai_modifier
          effective_pixel_opacity = np.clip(effective_pixel_opacity, 0.0, 1.0)
 
-         target_shade_float = 255.0 * (1.0 - effective_pixel_opacity)
-
          canvas_slice_float = current_local_area_overlap_slice.astype(np.float32)
-         blended_slice_float = np.minimum(canvas_slice_float, target_shade_float)
+
+         if not is_eraser:
+             # Apply ink (darken towards 0)
+             target_shade_float = 255.0 * (1.0 - effective_pixel_opacity)
+             blended_slice_float = np.minimum(canvas_slice_float, target_shade_float)
+         else:
+             # Apply eraser (lighten towards 255)
+             # Target shade for eraser is 255 (white). Opacity means how much of 255 is applied.
+             # Standard alpha blending formula: result = (1-alpha)*foreground + alpha*background
+             # Here: result = (1 - effective_opacity) * existing_canvas + effective_opacity * 255
+             # Use float arithmetic for blending
+             blended_slice_float = (1.0 - effective_pixel_opacity) * canvas_slice_float + effective_pixel_opacity * 255.0
+             blended_slice_float = np.clip(blended_slice_float, 0.0, 255.0) # Ensure values are in range
+
          current_local_area_overlap_slice[:] = blended_slice_float.astype(np.uint8)
 
 def apply_basic_brush_stroke_segment(
@@ -311,13 +326,21 @@ def finalize_stroke(
     brush_params: dict
 ) -> QRect:
     """Finalizes a stroke by applying localized diffusion (blur)."""
-    final_updated_area_canvas = apply_localized_blur(
-        lienzo,
-        stroke_inked_region_canvas,
-        brush_params.get('wetness', 70),
-        brush_params.get('size', 15)
-    )
-    return final_updated_area_canvas
+    is_eraser = brush_params.get('is_eraser', False)
+
+    if is_eraser:
+         # Eraser strokes do not get diffusion
+         # The relevant area for updating the UI is just the inked region itself now
+         return stroke_inked_region_canvas.normalized()
+    else:
+         # Ink strokes get diffusion
+         final_updated_area_canvas = apply_localized_blur(
+            lienzo,
+            stroke_inked_region_canvas,
+            brush_params.get('wetness', 70),
+            brush_params.get('size', 15)
+        )
+         return final_updated_area_canvas
 
 def apply_localized_blur(
     lienzo: Lienzo,

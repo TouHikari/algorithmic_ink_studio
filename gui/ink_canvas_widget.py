@@ -13,6 +13,7 @@ from processing.lienzo import Lienzo
 
 class InkCanvasWidget(QWidget):
     canvas_content_changed = pyqtSignal()
+    strokeFinished = pyqtSignal() # Signal to notify MainWindow that a stroke is done
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -29,6 +30,8 @@ class InkCanvasWidget(QWidget):
             'type': 'round'
         }
 
+        self._current_tool = "brush" # Track current tool: "brush" or "eraser"
+
         self._stroke_inked_region_canvas: QRect = QRect()
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -44,6 +47,16 @@ class InkCanvasWidget(QWidget):
 
     def set_brush_params(self, params: dict):
         self._current_brush_params.update(params)
+
+    def set_current_tool(self, tool_name: str):
+        """Sets the current tool ('brush' or 'eraser')."""
+        if tool_name in ["brush", "eraser"]:
+            self._current_tool = tool_name
+            print(f"Tool switched to: {self._current_tool}")
+            # Optionally update cursor appearance here
+            # self.setCursor(...)
+        else:
+            print(f"Warning: Unknown tool name '{tool_name}'. Tool not changed.")
 
     def paintEvent(self, event: QPaintEvent):
          painter = QPainter(self)
@@ -70,8 +83,6 @@ class InkCanvasWidget(QWidget):
              painter.drawText(event.rect(), Qt.AlignCenter, "画布绘制错误!")
              return
 
-         # Draw the entire pixmap scaled to the widget area.
-         # This is simpler and more robust than trying to map dirty rectangles perfectly.
          painter.drawPixmap(self.rect(), pixmap, pixmap.rect())
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -81,7 +92,7 @@ class InkCanvasWidget(QWidget):
 
         if 'type' not in self._current_brush_params or 'size' not in self._current_brush_params:
              print(f"Warning: Missing brush parameter(s): {self._current_brush_params}. Cannot start drawing.")
-             QMessageBox.warning(self, "绘画出错", "笔刷参数不完整，无法开始绘画。")
+             QMessageBox.warning(self, "操作出错", "笔刷参数不完整，无法开始操作。")
              super().mousePressEvent(event)
              return
 
@@ -92,26 +103,29 @@ class InkCanvasWidget(QWidget):
 
         canvas_point = self._widget_to_canvas(self._last_point_widget)
 
+        # Prepare params based on current tool
+        params_for_engine = self._current_brush_params.copy()
+        params_for_engine['is_eraser'] = (self._current_tool == "eraser")
+
         try:
             inked_rect_canvas = apply_basic_brush_stroke_segment(
                  self._lienzo,
                  canvas_point,
                  canvas_point,
-                 self._current_brush_params
+                 params_for_engine # Pass tool-modified params
             )
         except Exception as e:
              print(f"Error in apply_basic_brush_stroke_segment during mousePress: {e}")
              self._is_drawing = False
              self._last_point_widget = None
              self._stroke_inked_region_canvas = QRect()
-             QMessageBox.critical(self, "绘画出错", f"处理第一个笔画点时发生错误: {e}")
+             QMessageBox.critical(self, "操作出错", f"处理第一个操作点时发生错误: {e}")
              super().mousePressEvent(event)
              return
 
         if inked_rect_canvas.isValid() and not inked_rect_canvas.isNull():
             self._stroke_inked_region_canvas = self._stroke_inked_region_canvas.united(inked_rect_canvas)
-            # Request FULL repaint to avoid artifacts
-            self.update() # Changed from update(rect) to update()
+            self.update()
 
         super().mousePressEvent(event)
 
@@ -129,12 +143,16 @@ class InkCanvasWidget(QWidget):
              self._last_point_widget = current_point_widget
              return
 
+        # Prepare params based on current tool
+        params_for_engine = self._current_brush_params.copy()
+        params_for_engine['is_eraser'] = (self._current_tool == "eraser")
+
         try:
             inked_rect_canvas = apply_basic_brush_stroke_segment(
                  self._lienzo,
                  canvas_last_point,
                  canvas_current_point,
-                 self._current_brush_params
+                 params_for_engine # Pass tool-modified params
             )
         except Exception as e:
              print(f"Error in apply_basic_brush_stroke_segment during mouseMove: {e}")
@@ -150,8 +168,7 @@ class InkCanvasWidget(QWidget):
             else:
                 self._stroke_inked_region_canvas = self._stroke_inked_region_canvas.united(inked_rect_canvas)
 
-            # Request FULL repaint to avoid artifacts
-            self.update() # Changed from update(rect) to update()
+            self.update()
 
         self._last_point_widget = current_point_widget
 
@@ -162,13 +179,9 @@ class InkCanvasWidget(QWidget):
              super().mouseReleaseEvent(event)
              return
 
-        if 'wetness' not in self._current_brush_params or 'size' not in self._current_brush_params:
-            print("Warning: Missing brush parameters for finalization. Skipping finalize_stroke.")
-            self._is_drawing = False
-            self._last_point_widget = None
-            self._stroke_inked_region_canvas = QRect()
-            super().mouseReleaseEvent(event)
-            return
+        # Prepare params based on current tool for finalization
+        params_for_engine = self._current_brush_params.copy()
+        params_for_engine['is_eraser'] = (self._current_tool == "eraser")
 
         if self._last_point_widget is not None:
             current_point_widget = event.pos()
@@ -181,7 +194,7 @@ class InkCanvasWidget(QWidget):
                            self._lienzo,
                            canvas_last_point,
                            canvas_current_point,
-                           self._current_brush_params
+                           params_for_engine # Pass tool-modified params
                       )
                       if inked_rect_canvas.isValid() and not inked_rect_canvas.isNull():
                           if self._stroke_inked_region_canvas.isNull():
@@ -192,33 +205,41 @@ class InkCanvasWidget(QWidget):
                  except Exception as e:
                       print(f"Error in apply_basic_brush_stroke_segment during mouseRelease last segment: {e}")
 
-        self._finalize_current_stroke()
+        self._finalize_current_stroke(params_for_engine) # Pass params to finalization
 
         self._is_drawing = False
         self._last_point_widget = None
         self._stroke_inked_region_canvas = QRect()
 
+        # Emit signal to indicate a stroke is finished for history saving
+        self.strokeFinished.emit()
+
         super().mouseReleaseEvent(event)
 
-    def _finalize_current_stroke(self):
+    def _finalize_current_stroke(self, params_for_engine: dict):
         if self._lienzo is None or self._stroke_inked_region_canvas.isNull() or not self._stroke_inked_region_canvas.isValid():
              return
 
         try:
+            # finalize_stroke internally checks for 'is_eraser'
             updated_canvas_rect = finalize_stroke(
                  self._lienzo,
                  self._stroke_inked_region_canvas,
-                 self._current_brush_params
+                 params_for_engine # Pass tool-modified params
             )
         except Exception as e:
              print(f"Error during stroke finalization: {e}")
              updated_canvas_rect = self._stroke_inked_region_canvas.normalized()
-             QMessageBox.critical(self, "绘画出错", f"完成笔画时发生错误 (可能与晕染有关): {e}")
+             QMessageBox.critical(self, "操作出错", f"完成操作时发生错误: {e}")
 
-        # Request FULL repaint after finalization to show blur correctly
-        self.update() # Changed from update(rect) to update()
+        # Request FULL repaint after finalization
+        # Even if finalize_stroke returns an empty rect (e.g., eraser with wetness 0),
+        # we need to repaint the area that was modified in the segment calls.
+        # However, the stroke_inked_region_canvas should cover the modified area before finalize.
+        # Let's just repaint the entire canvas for simplicity and robustness with Undo/Redo state loading.
+        self.update()
 
-    # Coordinate transformation helpers (remain the same)
+    # Coordinate transformation helpers
     def _widget_to_canvas(self, widget_point: QPoint) -> QPoint:
         """Converts a point from widget coordinates to canvas data coordinates."""
         if self._lienzo is None or self.width() <= 0 or self.height() <= 0:
@@ -298,7 +319,7 @@ class InkCanvasWidget(QWidget):
 
         return QRect(canvas_x1, canvas_y1, canvas_w, canvas_h)
 
-    # Additional Canvas Operations (remain the same)
+    # Additional Canvas Operations
     def load_image_into_canvas(self, image_data: np.ndarray):
         """Resizes and sets the given NumPy image data to the current canvas."""
         if image_data is None or image_data.size == 0:
