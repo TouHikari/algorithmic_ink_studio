@@ -25,7 +25,6 @@ class InkCanvasWidget(QWidget):
         self._is_drawing = False
         self._last_point_widget: QPoint = None
 
-        # Updated default parameters including color
         self._current_brush_params = {
             'size': 40,
             'density': 60,
@@ -39,7 +38,7 @@ class InkCanvasWidget(QWidget):
             'pos_jitter': 0,
             'size_jitter': 0,
             'angle_jitter': 0,
-            'color': (0, 0, 0) # Default color is black (BGR)
+            'color': (0, 0, 0)
         }
 
         self._current_tool = "brush"
@@ -79,7 +78,6 @@ class InkCanvasWidget(QWidget):
         return self._lienzo
 
     def set_brush_params(self, params: dict):
-        # Update method correctly merges new parameters, including color
         self._current_brush_params.update(params)
 
     def set_current_tool(self, tool_name: str):
@@ -135,13 +133,13 @@ class InkCanvasWidget(QWidget):
 
     def paintEvent(self, event: QPaintEvent):
          painter = QPainter(self)
-         painter.fillRect(event.rect(), Qt.lightGray) # Fill background with light gray
+         painter.fillRect(event.rect(), Qt.lightGray)
 
          if self._lienzo is None or self._lienzo.get_canvas_data().size == 0:
              painter.drawText(self.rect(), Qt.AlignCenter, "等待加载画布或图片...")
              return
 
-         canvas_data = self._lienzo.get_canvas_data() # Should be BGR now
+         canvas_data = self._lienzo.get_canvas_data()
          canvas_width, canvas_height = self._lienzo.get_size()
          widget_width, widget_height = self.width(), self.height()
 
@@ -150,7 +148,7 @@ class InkCanvasWidget(QWidget):
 
          pixmap = QPixmap()
          try:
-             pixmap = convert_cv_to_qt(canvas_data) # convert_cv_to_qt handles BGR
+             pixmap = convert_cv_to_qt(canvas_data)
          except Exception as e:
              print(f"Error converting canvas data to QPixmap for painting: {e}")
              painter.drawText(self.rect(), Qt.AlignCenter, "画布绘制错误!")
@@ -177,7 +175,7 @@ class InkCanvasWidget(QWidget):
              super().mousePressEvent(event)
              return
 
-        required_params = ['size', 'density', 'wetness', 'feibai', 'hardness', 'flow', 'type', 'angle_mode', 'fixed_angle', 'pos_jitter', 'size_jitter', 'angle_jitter', 'color'] # Added color
+        required_params = ['size', 'density', 'wetness', 'feibai', 'hardness', 'flow', 'type', 'angle_mode', 'fixed_angle', 'pos_jitter', 'size_jitter', 'angle_jitter', 'color']
         if not all(param in self._current_brush_params for param in required_params):
              print(f"Warning: Missing brush parameter(s). Cannot start operation. Params: {self._current_brush_params}")
              QMessageBox.warning(self, "操作出错", "笔刷参数不完整，无法开始操作。")
@@ -307,18 +305,12 @@ class InkCanvasWidget(QWidget):
              super().mouseReleaseEvent(event)
              return
 
-        # Check for necessary brush parameters for finalization
-        required_params = ['wetness', 'size', 'is_eraser'] # is_eraser is needed for finalize_stroke check
-        if not all(param in self._current_brush_params for param in required_params): # Use current_brush_params directly here
-             print(f"Warning: Missing brush parameters for finalization. Skipping finalize_stroke. Params: {self._current_brush_params}")
-             self._is_drawing = False
-             self._last_point_widget = None
-             self._stroke_inked_region_canvas = QRect()
-             super().mouseReleaseEvent(event)
-             return
-
+        # --- FIX: Updated required_params for finalization ---
+        required_params = ['wetness', 'size', 'is_eraser'] # Minimum required for finalize_stroke
+        # Ensure all brush parameters from _current_brush_params are passed to finalization
+        # finalize_stroke just needs the dict, it handles which keys it uses.
         params_for_engine = self._current_brush_params.copy()
-        params_for_engine['is_eraser'] = (self._current_tool == "eraser") # Ensure is_eraser is set for finalization
+        params_for_engine['is_eraser'] = (self._current_tool == "eraser") # Ensure is_eraser is set
 
         # Handle the very last segment if needed
         if self._last_point_widget is not None:
@@ -332,7 +324,7 @@ class InkCanvasWidget(QWidget):
                            self._lienzo,
                            canvas_last_point,
                            canvas_current_point,
-                           params_for_engine
+                           params_for_engine # Pass full params
                       )
                       if inked_rect_canvas.isValid() and not inked_rect_canvas.isNull():
                           if self._stroke_inked_region_canvas.isNull():
@@ -343,7 +335,7 @@ class InkCanvasWidget(QWidget):
                  except Exception as e:
                       print(f"Error in apply_basic_brush_stroke_segment during mouseRelease last segment: {e}")
 
-        self._finalize_current_stroke(params_for_engine)
+        self._finalize_current_stroke(params_for_engine) # Pass full params
 
         self._is_drawing = False
         self._last_point_widget = None
@@ -411,7 +403,7 @@ class InkCanvasWidget(QWidget):
             updated_canvas_rect = finalize_stroke(
                  self._lienzo,
                  self._stroke_inked_region_canvas,
-                 params_for_engine # Pass params including wetness and is_eraser
+                 params_for_engine
             )
         except Exception as e:
              print(f"Error during stroke finalization: {e}")
@@ -504,7 +496,7 @@ class InkCanvasWidget(QWidget):
              return
 
         try:
-            self._lienzo.set_canvas_data(image_data) # set_canvas_data handles conversion to BGR and resizing
+            self._lienzo.set_canvas_data(image_data)
         except Exception as e:
              print(f"Error setting image data to lienzo: {e}")
              QMessageBox.critical(self, "加载出错", f"将图片数据载入画布时发生错误: {e}")
@@ -519,7 +511,7 @@ class InkCanvasWidget(QWidget):
         """Returns the current canvas content as a NumPy array (BGR uint8)."""
         if self._lienzo:
             return self._lienzo.get_canvas_data().copy()
-        return np.empty((0, 0, 3), dtype=np.uint8) # Return empty color array
+        return np.empty((0, 0, 3), dtype=np.uint8)
 
     def get_canvas_size(self) -> QSize:
          """Returns the canvas size as a QSize."""

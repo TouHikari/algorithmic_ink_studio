@@ -1,9 +1,9 @@
 # gui/control_panel.py
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider,
-                              QGroupBox, QSpacerItem, QSizePolicy, QPushButton, # Imported QPushButton
-                              QSpinBox, QComboBox, QColorDialog, QFrame) # Imported QColorDialog, QFrame
-from PyQt5.QtGui import QColor # Imported QColor
+                              QGroupBox, QSpacerItem, QSizePolicy, QPushButton,
+                              QSpinBox, QComboBox, QColorDialog, QFrame, QGridLayout) # Imported QGridLayout
+from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, pyqtSignal
 
 class ControlPanel(QWidget):
@@ -16,12 +16,9 @@ class ControlPanel(QWidget):
         self._parameter_widgets = {}
         self._brush_type_combo = None
         self._angle_mode_combo = None
-        # Fixed angle and jitter widgets already exist
-        # self._fixed_angle_widgets = {}
-        # self._jitter_widgets = {}
 
-        self._color_frame = None # Widget to display current color
-        self._color_dialog = None # Color dialog instance
+        self._color_frame = None
+        self._color_dialog = None
 
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setAlignment(Qt.AlignTop)
@@ -33,16 +30,16 @@ class ControlPanel(QWidget):
         # Current Color Display
         color_display_hbox = QHBoxLayout()
         self.current_color_label = QLabel("当前颜色:")
-        self.current_color_label.setFixedWidth(120) # Align with parameter labels
+        self.current_color_label.setFixedWidth(120)
         self.current_color_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._color_frame = QFrame(self) # Use QFrame to show color rectangle
-        self._color_frame.setFixedSize(80, 20) # Fixed size for color swatch
-        self._color_frame.setAutoFillBackground(True) # Allow filling background with color
-        self._color_frame.setStyleSheet(f"background-color: white;") # Initial color display
+        self._color_frame = QFrame(self)
+        self._color_frame.setFixedSize(80, 20)
+        self._color_frame.setAutoFillBackground(True)
+        self._color_frame.setStyleSheet(f"background-color: white;")
 
         color_display_hbox.addWidget(self.current_color_label)
         color_display_hbox.addWidget(self._color_frame)
-        color_display_hbox.addStretch(1) # Push frame to the left
+        color_display_hbox.addStretch(1)
 
         self.color_layout.addLayout(color_display_hbox)
 
@@ -51,22 +48,21 @@ class ControlPanel(QWidget):
         self.pick_color_button.clicked.connect(self._pick_color)
         self.color_layout.addWidget(self.pick_color_button)
 
-        # Predefined Colors (Horizontal layout for buttons)
+        # Predefined Colors
         self.predefined_colors_label = QLabel("预设颜色:")
-        self.predefined_colors_label.setFixedWidth(120) # Align
+        self.predefined_colors_label.setFixedWidth(120)
         self.predefined_colors_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.color_layout.addWidget(self.predefined_colors_label)
 
-        # Define Chinese ink colors (BGR tuple format for internal consistency)
         self._chinese_ink_colors_bgr = {
+            "墨黑": (0, 0, 0),
+            "钛白": (255, 255, 255),
             "三青": (200, 120, 0),
             "三绿": (100, 200, 0),
             "花青": (150, 80, 50),
             "朱砂": (0, 0, 255),
             "朱磦": (0, 69, 255),
             "胭脂": (150, 0, 200),
-            "钛白": (255, 255, 255),
-            "墨黑": (0, 0, 0),
             "曙红": (50, 50, 200),
             "藤黄": (0, 215, 255),
             "赭石": (50, 100, 150),
@@ -119,14 +115,14 @@ class ControlPanel(QWidget):
 
         self.main_layout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        # Initialize color parameter with white (BGR)
         self._current_params['color'] = (255, 255, 255)
-        self._update_color_display(QColor(255, 255, 255)) # Update display to white
+        self._update_color_display(QColor(255, 255, 255))
 
         self._connect_signals()
         
-        self._read_all_parameters() # Read all numerical and combo box defaults
-        # The initial color is set above, manual emission of parameters is handled by set_available_brush_types in MainWindow
+        self._read_all_parameters()
+        # Initial color is set, so emit the full initial state after reading everything else
+        self.parameters_changed.emit(self._current_params.copy())
 
     def _create_parameter_control(self, label_text: str, min_val: int, max_val: int, default_val: int, param_name: str, parent_layout: QVBoxLayout):
         """Helper method to create a parameter control (Slider + SpinBox)."""
@@ -194,40 +190,33 @@ class ControlPanel(QWidget):
         return hbox
 
     def _create_predefined_color_buttons(self, parent_layout: QVBoxLayout):
-        """Creates buttons for predefined colors, arranged in rows."""
-        row_layout = None
-        buttons_per_row = 4 # Example: 4 buttons per row
+        """Creates buttons for predefined colors, arranged in rows using GridLayout."""
+        # Use a grid layout for better arrangement of buttons
+        color_grid_layout = QGridLayout()
+        # Add spacing to align with labels
+        color_grid_layout.setContentsMargins(120 + color_grid_layout.spacing(), 0, 0, 0) # Left margin to align under label
+
+        buttons_per_row = 4
 
         for i, (name, bgr_color) in enumerate(self._chinese_ink_colors_bgr.items()):
-            # Start a new row layout every 'buttons_per_row' buttons
-            if i % buttons_per_row == 0:
-                if row_layout is not None:
-                    parent_layout.addLayout(row_layout) # Add the finished row to the parent layout
-                row_layout = QHBoxLayout() # Create a new horizontal layout for the row
-                row_layout.addSpacing(120 + 6) # Add spacing to align with labels/sliders
+            row = i // buttons_per_row
+            col = i % buttons_per_row
 
-            # Create a button for the color
             color_button = QPushButton(name)
-            # Set button background color - use RGB triplet from QColor or CSS
-            # QColor uses RGB, but we store BGR. Convert BGR to RGB for QColor/CSS
             rgb_color = (bgr_color[2], bgr_color[1], bgr_color[0])
-            # Set a minimum size for the button to show the color swatch
-            color_button.setFixedSize(60, 25) # Fixed size for color buttons
-            # Check for light vs dark color to set text color for visibility
+
+            color_button.setFixedSize(60, 25) # Fixed size buttons
+
             luminance = 0.299*rgb_color[0] + 0.587*rgb_color[1] + 0.114*rgb_color[2]
-            text_color = "black" if luminance > 180 else "white" # Use white text for dark backgrounds
+            text_color = "black" if luminance > 180 else "white"
             color_button.setStyleSheet(f"background-color: rgb({rgb_color[0]},{rgb_color[1]},{rgb_color[2]}); color: {text_color}; border: 1px solid gray;")
 
-            # Connect button click to setting this color
-            # Lambda captures the bgr_color tuple, converting it to QColor for the slot
-            color_button.clicked.connect(lambda checked, c=bgr_color: self._set_current_color(QColor(c[2], c[1], c[0]))) # Pass QColor created from BGR
+            color_button.clicked.connect(lambda checked, c=bgr_color: self._set_current_color(QColor(c[2], c[1], c[0])))
 
-            row_layout.addWidget(color_button, 1) # Add button to the current row layout with stretch
+            color_grid_layout.addWidget(color_button, row, col)
 
-        # Add the last row layout (if any buttons were added)
-        if row_layout is not None:
-             row_layout.addStretch(1) # Add stretch to the last row
-             parent_layout.addLayout(row_layout)
+        # Add the grid layout to the parent layout (color_layout)
+        parent_layout.addLayout(color_grid_layout)
 
     def set_available_brush_types(self, brush_types: list[str], default_type: str = 'round'):
         """Populates the brush type combobox and sets the initial state."""
@@ -258,15 +247,13 @@ class ControlPanel(QWidget):
              pass
         self._brush_type_combo.currentTextChanged.connect(lambda text: self._on_parameter_changed('type', text))
 
-        # Read all parameters (including initial type, angle mode, but excluding color) and emit initial signal
         self._read_all_parameters()
-        # The color is already initialized to white. Emit the full initial state.
         self.parameters_changed.emit(self._current_params.copy())
 
     def _read_all_parameters(self):
         """Reads current values of all controls EXCEPT color."""
         for param_name, widgets in self._parameter_widgets.items():
-            self._current_params[param_name] = widgets['spinbox'].value() # Use spinbox value
+            self._current_params[param_name] = widgets['spinbox'].value()
 
         if self._brush_type_combo is not None:
              self._current_params['type'] = self._brush_type_combo.currentText()
@@ -276,11 +263,14 @@ class ControlPanel(QWidget):
         else:
              self._current_params['angle_mode'] = 'Direction'
 
-        # Color is handled separately by _set_current_color and _pick_color
-
     def _on_parameter_changed(self, param_name: str, value):
         """Internal slot: Updates param dict and emits signal."""
-        self._current_params[param_name] = value
+        # Ensure int values are int, and string values are string
+        if isinstance(value, (int, float)):
+             self._current_params[param_name] = int(value) # Store numeric as int
+        else:
+             self._current_params[param_name] = value # Store string as string
+
         self.parameters_changed.emit(self._current_params.copy())
 
     def _on_angle_mode_changed(self, text: str):
@@ -290,40 +280,37 @@ class ControlPanel(QWidget):
 
     def _pick_color(self):
         """Slot: Opens the color dialog to pick a color."""
-        # Ensure color dialog is created only once
         if self._color_dialog is None:
              self._color_dialog = QColorDialog(self)
+             # Add "ShowAlphaChannel" option if you plan to support alpha later
+             # self._color_dialog.setOption(QColorDialog.ShowAlphaChannel)
+
+             # --- FIX: Attempt to set dialog window title for better clarity ---
+             self._color_dialog.setWindowTitle("选择笔刷颜色")
+
              # Connect color dialog signals
-             self._color_dialog.colorSelected.connect(self._set_current_color) # Emitted when Ok is clicked
+             self._color_dialog.colorSelected.connect(self._set_current_color)
              # self._color_dialog.currentColorChanged.connect(self._update_color_display) # Optional: Real-time preview
 
-        # Set the initially selected color in the dialog to the current brush color
-        # _current_params['color'] is BGR tuple. QColor needs RGB.
         current_bgr = self._current_params.get('color', (255, 255, 255))
-        self._color_dialog.setCurrentColor(QColor(current_bgr[2], current_bgr[1], current_bgr[0])) # QColor(R, G, B)
+        self._color_dialog.setCurrentColor(QColor(current_bgr[2], current_bgr[1], current_bgr[0]))
 
-        # Execute dialog
         self._color_dialog.exec_()
 
     def _set_current_color(self, color: QColor):
         """Sets the brush color from a QColor object."""
         if color.isValid():
-            # QColor stores RGB. We need BGR for OpenCV/NumPy/brush engine.
             bgr_color = (color.blue(), color.green(), color.red())
             self._current_params['color'] = bgr_color
-            self._update_color_display(color) # Update the UI display
-            self.parameters_changed.emit(self._current_params.copy()) # Emit the updated parameters dict
+            self._update_color_display(color)
+            self.parameters_changed.emit(self._current_params.copy())
 
     def _update_color_display(self, color: QColor):
         """Updates the current color display QFrame."""
         if self._color_frame:
-            # Set the background color using stylesheet with QColor (which uses RGB internally)
-            self._color_frame.setStyleSheet(f"background-color: {color.name()}; border: 1px solid gray;") # Use color name (hex)
+            self._color_frame.setStyleSheet(f"background-color: {color.name()}; border: 1px solid gray;")
 
     def _connect_signals(self):
-        # Numeric parameter signals connected in _create_parameter_control/_create_angle_control
-        # Brush type combo signal connected in set_available_brush_types
-        # Angle mode combo signal connected after creation
         if self._angle_mode_combo is not None:
              try:
                   self._angle_mode_combo.currentTextChanged.disconnect()
@@ -331,11 +318,7 @@ class ControlPanel(QWidget):
                   pass
              self._angle_mode_combo.currentTextChanged.connect(self._on_angle_mode_changed)
 
-        # Color picker button signal connected in __init__
-        # Color dialog signal connected in _pick_color
-
     def get_current_parameters(self) -> dict:
         """Returns current brush parameter values."""
-        self._read_all_parameters() # Read numerical and combo box values
-        # Color is already in _current_params if set by _set_current_color or _pick_color
+        self._read_all_parameters()
         return self._current_params.copy()

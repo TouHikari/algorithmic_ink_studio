@@ -1,16 +1,26 @@
+# main.py
+
 import sys
 from PyQt5.QtWidgets import QApplication
-from gui.main_window import MainWindow
+# --- Added imports for localization ---
+from PyQt5.QtCore import QTranslator, QLibraryInfo, QLocale
 
 if __name__ == "__main__":
-    # 创建Qt应用程序实例
     app = QApplication(sys.argv)
 
-    # 创建主窗口实例
-    main_window = MainWindow()
-    main_window.show() # 显示窗口
+    # --- Attempt to load Qt translations for localization ---
+    translator = QTranslator()
+    # Try loading translation file based on system locale from standard Qt translation paths
+    if translator.load("qt_%s" % QLocale.system().name(), QLibraryInfo.location(QLibraryInfo.TranslationsPath)):
+         app.installTranslator(translator)
+    # You might need to specify a fallback path or try specific languages too
+    # Example for Chinese:
+    # if translator.load("qt_zh_CN", QLibraryInfo.location(QLibraryInfo.TranslationsPath)):
+    #     app.installTranslator(translator)
 
-    # 启动应用程序的事件循环
-    # 事件循环会等待用户操作（如点击、输入）或系统事件（如窗口重绘）
-    # 当事件发生时，Qt会将事件发送给对应的窗口或控件进行处理（信号与槽机制）
+    from gui.main_window import MainWindow
+
+    main_window = MainWindow()
+    main_window.show()
+
     sys.exit(app.exec_())
