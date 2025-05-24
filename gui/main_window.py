@@ -3,7 +3,7 @@
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QPushButton, QSlider, QFileDialog, QMessageBox, QAction,
                               QSizePolicy, QActionGroup, QInputDialog)
-from PyQt5.QtGui import QPixmap, QImage, QIcon
+from PyQt5.QtGui import QPixmap, QImage, QIcon, QColor # Imported QColor
 from PyQt5.QtCore import Qt, QRect, QSize, QPoint, QCoreApplication
 
 import numpy as np
@@ -28,7 +28,8 @@ class MainWindow(QMainWindow):
 
         self.main_layout = QHBoxLayout(self.central_widget)
 
-        self.lienzo = Lienzo(width=canvas_initial_width, height=canvas_initial_height, color=255)
+        # Initialize Lienzo with white BGR color
+        self.lienzo = Lienzo(width=canvas_initial_width, height=canvas_initial_height, color=(255, 255, 255))
 
         self.canvas_widget = InkCanvasWidget()
         self.canvas_widget.set_lienzo(self.lienzo)
@@ -231,7 +232,10 @@ class MainWindow(QMainWindow):
             width, height = self.lienzo.get_size()
             zoom = self.canvas_widget.get_zoom_factor()
             tool_name_zh = "画笔" if self.canvas_widget._current_tool == "brush" else "橡皮擦"
-            brush_params = self.canvas_widget._current_brush_params # Access current params from canvas_widget
+            brush_params = self.canvas_widget._current_brush_params
+            # Get color in RGB for status bar, assuming BGR in params
+            current_bgr = brush_params.get('color', (0,0,0))
+            color_str = f"RGB({current_bgr[2]},{current_bgr[1]},{current_bgr[0]})"
 
             status_text = (
                 f"工具：{tool_name_zh}"
@@ -241,6 +245,7 @@ class MainWindow(QMainWindow):
                 f" | 参数：大小={brush_params.get('size', '-')}, 密度={brush_params.get('density', '-')}, 湿润度={brush_params.get('wetness', '-')}, 飞白={brush_params.get('feibai', '-')}, 硬度={brush_params.get('hardness', '-')}, 流量={brush_params.get('flow', '-')}"
                 f" 类型={brush_params.get('type', '-')}"
                 f" 角度模式={brush_params.get('angle_mode', '-')}"
+                f" | 颜色: {color_str}" # Added color info
             )
             self.statusBar().showMessage(status_text)
 
@@ -285,7 +290,8 @@ class MainWindow(QMainWindow):
              return
 
         try:
-             self.lienzo = Lienzo(width=width, height=height, color=255)
+             # Initialize Lienzo with white BGR color
+             self.lienzo = Lienzo(width=width, height=height, color=(255, 255, 255))
              self.canvas_widget.set_lienzo(self.lienzo)
 
              self._history = []
@@ -303,7 +309,7 @@ class MainWindow(QMainWindow):
         """Slot: Zooms in."""
         if self.lienzo is None: return
         current_zoom = self.canvas_widget.get_zoom_factor()
-        zoom_levels = [0.01, 0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 5.0, 8.0, 10.0, 16.0, 32.0, 64.0, 100.0]
+        zoom_levels = [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 5.0, 8.0, 10.0, 16.0, 32.0, 64.0, 100.0]
         new_zoom = current_zoom
         for level in zoom_levels:
             if level > current_zoom + 0.001:
@@ -313,8 +319,6 @@ class MainWindow(QMainWindow):
              new_zoom = zoom_levels[-1]
 
         if new_zoom != current_zoom:
-            # Keep current pan, set_zoom_pan will handle re-centering based on mouse pos in wheelEvent, but not here.
-            # For menu/toolbar zoom, just keep the current pan offset.
             current_pan_offset = self.canvas_widget.get_pan_offset()
             self.canvas_widget.set_zoom_pan(new_zoom, current_pan_offset)
 
@@ -322,7 +326,7 @@ class MainWindow(QMainWindow):
         """Slot: Zooms out."""
         if self.lienzo is None: return
         current_zoom = self.canvas_widget.get_zoom_factor()
-        zoom_levels = [0.01, 0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 5.0, 8.0, 10.0, 16.0, 32.0, 64.0, 100.0]
+        zoom_levels = [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 5.0, 8.0, 10.0, 16.0, 32.0, 64.0, 100.0]
         new_zoom = current_zoom
         for level in reversed(zoom_levels):
             if level < current_zoom - 0.001:
@@ -385,8 +389,9 @@ class MainWindow(QMainWindow):
             print(f"Selected file: {filepath}")
             self.statusBar().showMessage(f"正在加载图片: {filepath}...")
             try:
-                cv_image = cv2.imread(filepath)
+                cv_image = cv2.imread(filepath, cv2.IMREAD_UNCHANGED) # Read with alpha if prosent
                 if cv_image is not None:
+                    # load_image_into_canvas now handles conversion from various formats to BGR
                     self.canvas_widget.load_image_into_canvas(cv_image)
                     self._history = []
                     self._history_index = -1
@@ -401,7 +406,7 @@ class MainWindow(QMainWindow):
 
     def _save_canvas(self):
          print("Save canvas requested...")
-         canvas_data = self.canvas_widget.get_canvas_image_data()
+         canvas_data = self.canvas_widget.get_canvas_image_data() # Get BGR data
          if canvas_data is None or canvas_data.size == 0: QMessageBox.warning(self, "保存失败", "画布为空，没有内容可以保存。"); return
 
          file_dialog = QFileDialog(self)
@@ -415,17 +420,16 @@ class MainWindow(QMainWindow):
              filepath = file_dialog.selectedFiles()[0]
              print(f"Saving to: {filepath}"); self.statusBar().showMessage(f"正在保存画布到: {filepath}...")
              try:
-                 if canvas_data.dtype != np.uint8:
-                     print(f"Warning: Canvas data dtype is {canvas_data.dtype}, converting to uint8 for saving.")
-                     canvas_data = canvas_data.astype(np.uint8)
-                 if len(canvas_data.shape) == 3:
-                     print(f"Warning: Canvas data shape is {canvas_data.shape}, converting to grayscale for saving.")
-                     if canvas_data.shape[2] == 3:
-                          canvas_data = cv2.cvtColor(canvas_data, cv2.COLOR_BGR2GRAY)
-                     elif canvas_data.shape[2] == 4:
-                          canvas_data = cv2.cvtColor(canvas_data, cv2.COLOR_BGRA2GRAY)
-                     else:
-                           print(f"Warning: Cannot convert canvas data with {canvas_data.shape[2]} channels to gray for saving. Attempting save as is.")
+                 # cv2.imwrite handles BGR uint8 correctly for PNG, JPG, BMP
+                 if canvas_data.dtype != np.uint8 or len(canvas_data.shape) != 3 or canvas_data.shape[2] != 3:
+                       print(f"Warning: Canvas data format {canvas_data.shape}, {canvas_data.dtype} is not standard BGR uint8 for saving.")
+                       # Attempt conversion to BGR if possible, might fail with odd shapes/dtypes
+                       if len(canvas_data.shape) == 2 and canvas_data.dtype == np.uint8:
+                            canvas_data = cv2.cvtColor(canvas_data, cv2.COLOR_GRAY2BGR)
+                       else:
+                            QMessageBox.warning(self, "保存失败", "画布数据格式异常，无法保存。"); self.statusBar().showMessage("画布保存失败。")
+                            return
+
                  success = cv2.imwrite(filepath, canvas_data)
                  if success: print("Image saved successfully."); self.statusBar().showMessage("画布保存成功。")
                  else: QMessageBox.warning(self, "保存失败", "保存图片时发生错误。请检查文件路径或格式。"); self.statusBar().showMessage("画布保存失败。")
@@ -434,7 +438,7 @@ class MainWindow(QMainWindow):
     def _clear_canvas(self):
         print("Clear canvas requested...")
         if self.lienzo:
-            self.lienzo.fill(255)
+            self.lienzo.fill((255, 255, 255)) # Fill with white BGR
             self.canvas_widget.update()
             self._history = []
             self._history_index = -1

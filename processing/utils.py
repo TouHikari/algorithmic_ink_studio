@@ -6,11 +6,12 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtCore import Qt
 
 def convert_cv_to_qt(cv_image: np.ndarray) -> QPixmap:
-    """Converts an OpenCV image (NumPy array) to a Qt QPixmap."""
+    """Converts an OpenCV image (NumPy array BGR or Grayscale) to a Qt QPixmap."""
     if cv_image is None or cv_image.size == 0:
         print("Error: Input cv_image is empty or None.")
         return QPixmap()
 
+    # Ensure the image data is contiguous in memory
     cv_image = np.ascontiguousarray(cv_image)
 
     height, width = cv_image.shape[:2]
@@ -30,7 +31,7 @@ def convert_cv_to_qt(cv_image: np.ndarray) -> QPixmap:
              return QPixmap()
         q_image = QImage(cv_image.data, width, height, bytes_per_line, QImage.Format_Grayscale8)
 
-    elif cv_image.shape[2] == 3: # BGR color image (H, W, 3)
+    elif cv_image.shape[2] == 3: # BGR color image (H, W, 3) -> Convert to RGB for Qt display
         if cv_image.dtype != np.uint8:
              print(f"Warning: BGR image dtype is {cv_image.dtype}, attempting conversion to uint8.")
              cv_image = cv_image.astype(np.uint8)
@@ -41,15 +42,17 @@ def convert_cv_to_qt(cv_image: np.ndarray) -> QPixmap:
              return QPixmap()
         q_image = QImage(rgb_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
 
-    elif cv_image.shape[2] == 4: # BGRA image (H, W, 4)
+    elif cv_image.shape[2] == 4: # BGRA image (H, W, 4) -> Convert to RGBA for Qt Format_ARGB32 or use BGRA format
         if cv_image.dtype != np.uint8:
              print(f"Warning: BGRA image dtype is {cv_image.dtype}, attempting conversion to uint8.")
              cv_image = cv_image.astype(np.uint8)
+        # Assuming cv2 BGRA (BB GG RR AA). Qt Format_ARGB32 might be AA RR GG BB depending on endianness.
+        # On little-endian, Format_ARGB32 is usually BB GG RR AA in memory (same as BGRA).
         bytes_per_line_bgra = 4 * width
         if not cv_image.data:
              print("Error: cv_image data buffer is invalid for BGRA.")
              return QPixmap()
-        q_image = QImage(cv_image.data, width, height, bytes_per_line_bgra, QImage.Format_ARGB32)
+        q_image = QImage(cv_image.data, width, height, bytes_per_line_bgra, QImage.Format_ARGB32) # Try direct BGRA interpretation
 
     else:
         print(f"Error: Unsupported image format shape {cv_image.shape}. Cannot convert to QImage.")

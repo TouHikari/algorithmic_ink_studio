@@ -2,11 +2,11 @@
 
 import numpy as np
 import cv2
-from PyQt5.QtCore import QPoint, QRect
+from PyQt5.QtCore import QPoint, QRect # QColor not needed here
 import math
 import random
 import os
-from processing.lienzo import Lienzo
+from processing.lienzo import Lienzo # QColor not needed here
 
 _brush_shapes = {}
 _brush_shape_folder = os.path.join(os.path.dirname(__file__), '..', 'resources')
@@ -136,27 +136,27 @@ def get_scaled_rotated_brush_shape(brush_type: str, target_size: int, angle_degr
     return rotated_shape_opacity
 
 def _apply_single_brush_stamp(
-    local_area_uint8: np.ndarray,
+    local_area_uint8: np.ndarray, # HxWx3 BGR uint8
     center_local: QPoint,
     brush_params: dict,
-    local_area_noise_texture: np.ndarray,
+    local_area_noise_texture: np.ndarray, # HxW float32 (still grayscale noise)
     stamp_segment_angle_rad: float = None
 ):
-     """Applies a single brush stamp (ink or eraser) to a local uint8 canvas area centered at center_local."""
-     if local_area_uint8 is None or local_area_uint8.size == 0: return
+     """Applies a single brush stamp (ink or eraser) to a local BGR uint8 canvas area centered at center_local."""
+     if local_area_uint8 is None or local_area_uint8.size == 0 or local_area_uint8.shape[2] != 3: return # Expect BGR
      area_height, area_width = local_area_uint8.shape[:2]
      if area_width <= 0 or area_height <= 0: return
 
      is_eraser = brush_params.get('is_eraser', False)
+     brush_color_bgr = brush_params.get('color', (0, 0, 0)) # Grab color tuple (B, G, R)
 
-     if local_area_noise_texture is None or local_area_noise_texture.shape != local_area_uint8.shape:
+     if local_area_noise_texture is None or local_area_noise_texture.shape[:2] != local_area_uint8.shape[:2]: # Compare HxW
           print("Error: Noise texture slice has wrong shape or is None.")
-          local_area_noise_texture = np.ones_like(local_area_uint8, dtype=np.float32) * 0.5
+          local_area_noise_texture = np.ones(local_area_uint8.shape[:2], dtype=np.float32) * 0.5 # Fallback noise HxW
 
      base_brush_size = max(1, int(brush_params.get('size', 15)))
      flow = np.clip(float(brush_params.get('flow', 100)), 0.0, 100.0)
      density = np.clip(float(brush_params.get('density', 60)), 0.0, 100.0)
-     wetness = np.clip(float(brush_params.get('wetness', 0)), 0.0, 100.0)
      feibai = np.clip(float(brush_params.get('feibai', 20)), 0.0, 100.0)
      hardness = np.clip(float(brush_params.get('hardness', 50)), 0.0, 100.0)
      brush_type = brush_params.get('type', 'round')
@@ -168,8 +168,7 @@ def _apply_single_brush_stamp(
      angle_mode = brush_params.get('angle_mode', 'Direction')
      fixed_angle_degrees = float(brush_params.get('fixed_angle', 0))
 
-     # --- Apply Jitter to Size, Position, Angle ---
-
+     # --- Apply Jitter ---
      size_variation_factor = (size_jitter / 100.0) * 0.75
      current_brush_size = base_brush_size * (1.0 + random.uniform(-size_variation_factor, size_variation_factor))
      current_brush_size = max(1, int(current_brush_size))
@@ -192,22 +191,17 @@ def _apply_single_brush_stamp(
      if angle_mode == 'Direction':
           if stamp_segment_angle_rad is not None:
              current_angle_degrees = math.degrees(stamp_segment_angle_rad)
-
      elif angle_mode == 'Fixed':
           current_angle_degrees = fixed_angle_degrees
-
      elif angle_mode == 'Random':
           current_angle_degrees = random.uniform(0, 360)
-
      elif angle_mode == 'Direction+Jitter':
           if stamp_segment_angle_rad is not None:
               current_angle_degrees = math.degrees(stamp_segment_angle_rad)
           current_angle_degrees += random.uniform(-angle_jitter_degrees, angle_jitter_degrees)
-
      elif angle_mode == 'Fixed+Jitter':
           current_angle_degrees = fixed_angle_degrees
           current_angle_degrees += random.uniform(-angle_jitter_degrees, angle_jitter_degrees)
-
      current_angle_degrees = current_angle_degrees % 360.0
 
      # --- Get and Transform Brush Shape ---
@@ -223,6 +217,7 @@ def _apply_single_brush_stamp(
      adjusted_brush_opacity = np.clip(adjusted_brush_opacity, 0.0, 1.0)
 
      # --- Calculate overlap region ---
+     # Top-left corner of the brush centered at stamp_center_local
      brush_apply_x_start_local = stamp_center_local.x() - current_brush_radius
      brush_apply_y_start_local = stamp_center_local.y() - current_brush_radius
 
@@ -234,47 +229,70 @@ def _apply_single_brush_stamp(
      if slice_overlap_x2 <= slice_overlap_x1 or slice_overlap_y2 <= slice_overlap_y1:
           return
 
+     # Calculate the corresponding slice coordinates within the brush mask
      brush_mask_slice_x1 = slice_overlap_x1 - brush_apply_x_start_local
      brush_mask_slice_y1 = slice_overlap_y1 - brush_apply_y_start_local
      brush_mask_slice_x2 = brush_mask_slice_x1 + (slice_overlap_x2 - slice_overlap_x1)
      brush_mask_slice_y2 = brush_mask_slice_y1 + (slice_overlap_y2 - slice_overlap_y1)
 
-     current_local_area_overlap_slice = local_area_uint8[slice_overlap_y1:slice_overlap_y2, slice_overlap_x1:slice_overlap_x2]
-     brush_slice_opacity = adjusted_brush_opacity[brush_mask_slice_y1:brush_mask_slice_y2, brush_mask_slice_x1:brush_mask_slice_x2]
-     noise_slice = local_area_noise_texture[slice_overlap_y1:slice_overlap_y2, slice_overlap_x1:slice_overlap_x2]
+     current_local_area_overlap_slice = local_area_uint8[slice_overlap_y1:slice_overlap_y2, slice_overlap_x1:slice_overlap_x2] # HxWx3 BGR uint8
+     brush_slice_opacity = adjusted_brush_opacity[brush_mask_slice_y1:brush_mask_slice_y2, brush_mask_slice_x1:brush_mask_slice_x2] # HxW float32
+     noise_slice = local_area_noise_texture[slice_overlap_y1:slice_overlap_y2, slice_overlap_x1:slice_overlap_x2] # HxW float32
 
-     if current_local_area_overlap_slice.shape != brush_slice_opacity.shape or current_local_area_overlap_slice.shape != noise_slice.shape:
+     if brush_slice_opacity.shape != current_local_area_overlap_slice.shape[:2] or noise_slice.shape != current_local_area_overlap_slice.shape[:2]:
           print(f"Critical Slicing Error: Shape mismatch! Skipping stamp.")
           return
 
+     # --- Calculate Effective Per-Pixel Opacity ---
+     # Base opacity from Density and Flow
      base_stamp_opacity = (density / 100.0) * (flow / 100.0)
      base_stamp_opacity = np.clip(base_stamp_opacity, 0.0, 1.0)
 
+     # Feibai effect based on noise
      feibai_modifier = 1.0
-     if feibai > 0 and noise_slice is not None and noise_slice.shape == brush_slice_opacity.shape:
+     if feibai > 0:
          feibai_effect = (feibai / 100.0) * (1.0 - noise_slice)
          feibai_modifier = 1.0 - feibai_effect
          feibai_modifier = np.clip(feibai_modifier, 0.0, 1.0)
 
-     effective_pixel_opacity = base_stamp_opacity * brush_slice_opacity * feibai_modifier
-     effective_pixel_opacity = np.clip(effective_pixel_opacity, 0.0, 1.0)
+     # Combine all opacity factors: Base * BrushShape * Feibai
+     effective_pixel_opacity_hw = base_stamp_opacity * brush_slice_opacity * feibai_modifier
+     effective_pixel_opacity_hw = np.clip(effective_pixel_opacity_hw, 0.0, 1.0) # HxW float32
 
-     canvas_slice_float = current_local_area_overlap_slice.astype(np.float32)
+     # Expand opacity mask to 3 channels for blending with BGR data
+     effective_pixel_opacity_hwd = effective_pixel_opacity_hw[:, :, None] # HxWx1 float32
+
+     # --- Blend new ink onto the canvas slice ---
+     canvas_slice_float = current_local_area_overlap_slice.astype(np.float32) # HxWx3 float32
 
      if not is_eraser:
-         target_shade_float = 255.0 * (1.0 - effective_pixel_opacity)
-         blended_slice_float = np.minimum(canvas_slice_float, target_shade_float)
+         # Ink blending: Blend brush color with paper color (white 255,255,255) based on stamp opacity.
+         # Then, blend that result with the existing canvas pixel using np.minimum.
+         # Paper color is (255, 255, 255)
+         paper_color = np.array([255, 255, 255], dtype=np.float32)
+         brush_color_bgr_float = np.array(brush_color_bgr, dtype=np.float32)
+
+         # Calculated color applied by the stamp at this pixel (blending brush color and paper color based on opacity)
+         stamp_applied_color = (1.0 - effective_pixel_opacity_hwd) * paper_color[None, None, :] + effective_pixel_opacity_hwd * brush_color_bgr_float[None, None, :] # HxWx3 float32
+
+         # Blend the stamp_applied_color result with the existing canvas pixel using np.minimum
+         # This simulates ink darkening effect and mixing without brightening
+         blended_slice_float = np.minimum(canvas_slice_float, stamp_applied_color)
+
      else:
-         blended_slice_float = (1.0 - effective_pixel_opacity) * canvas_slice_float + effective_pixel_opacity * 255.0
-         blended_slice_float = np.clip(blended_slice_float, 0.0, 255.0)
+         # Eraser blending: Blend white (255, 255, 255) with existing canvas pixel based on stamp opacity
+         white_color = np.array([255, 255, 255], dtype=np.float32)
+         blended_slice_float = (1.0 - effective_pixel_opacity_hwd) * canvas_slice_float + effective_pixel_opacity_hwd * white_color[None, None, :] # HxWx3 float32
+
+     blended_slice_float = np.clip(blended_slice_float, 0.0, 255.0)
 
      current_local_area_overlap_slice[:] = blended_slice_float.astype(np.uint8)
 
 def apply_basic_brush_stroke_segment(
-    lienzo: Lienzo,
+    lienzo: Lienzo, # Lienzo now manages HxWx3 Data
     p1_canvas: QPoint,
     p2_canvas: QPoint,
-    brush_params: dict
+    brush_params: dict # Contains color key 'color': (B,G,R) tuple
 ) -> QRect:
     """Applies ink for a segment to the Lienzo, returns directly affected canvas area."""
     if lienzo is None: return QRect()
@@ -292,13 +310,12 @@ def apply_basic_brush_stroke_segment(
     dist_canvas = math.sqrt(dx_canvas**2 + dy_canvas**2)
 
     # --- Calculate number of stamps/interpolation steps based on desired stamp spacing ---
-    # Stamps should be placed close enough to create contiguous lines,
-    # typically related to brush size or a fixed few pixels.
-    # Let's try spacing stamps by a quarter of the base brush size.
-    stamp_spacing = max(1.0, base_brush_size / 4.0) # Ensure spacing is at least 1 pixel distance
+    # Stamps should be spaced by a fraction of the brush size to ensure continuity.
+    # A common value is spacing = brush_size / 4.
+    # Use a minimum spacing of 1 pixel on the canvas.
+    stamp_spacing = max(1.0, base_brush_size / 4.0)
 
-    # Number of steps = Total Distance / Spacing
-    # Number of stamps = Number of steps in distance + 1 (for the end point)
+    # Number of intervals = Total Distance / Spacing. Number of stamps = Number of intervals + 1.
     num_interpolation_steps = max(1, int(dist_canvas / stamp_spacing))
 
     segment_angle_rad = None
@@ -313,7 +330,7 @@ def apply_basic_brush_stroke_segment(
     max_pos_jitter_offset = (pos_jitter / 100.0) * base_brush_size
 
     buffer_radius = int(max_possible_stamp_radius + max_pos_jitter_offset)
-    buffer_radius = max(buffer_radius, base_brush_size)
+    buffer_radius = max(buffer_radius, base_brush_size) # Ensure buffer is at least base brush size for safety
 
     min_x_pt = min(p1_canvas.x(), p2_canvas.x())
     max_x_pt = max(p1_canvas.x(), p2_canvas.x())
@@ -343,54 +360,61 @@ def apply_basic_brush_stroke_segment(
         return QRect()
 
     try:
-        local_canvas_area_uint8 = lienzo.crop_area((process_rect_canvas.x(), process_rect_canvas.y(),
-                                                  process_rect_canvas.width(), process_rect_canvas.height()))
-        if local_canvas_area_uint8 is None or local_canvas_area_uint8.size == 0:
+        local_canvas_area = lienzo.crop_area((process_rect_canvas.x(), process_rect_canvas.y(),
+                                                  process_rect_canvas.width(), process_rect_canvas.height())) # This should return HxWx3
+        # Lienzo.crop_area already returns a copy
+        if local_canvas_area is None or local_canvas_area.size == 0: # Check .size for empty array
              print("Warning: Cropping area failed or returned empty.")
+             return QRect()
+        if local_canvas_area.shape[:2] != (process_rect_canvas.height(), process_rect_canvas.width()) or local_canvas_area.shape[2] != 3: # Check shape HxWx3
+             print(f"FATAL ERROR: Cropped area shape mismatch or invalid channels! Expected ({process_rect_canvas.height(), process_rect_canvas.width(), 3}), got {local_canvas_area.shape}. Skipping ink application.")
              return QRect()
     except Exception as e:
         print(f"Error cropping Lienzo for segment: {e}. Skipping ink application.")
         return QRect()
 
-    if local_canvas_area_uint8.shape[:2] != (process_rect_canvas.height(), process_rect_canvas.width()):
-         print(f"FATAL ERROR: Cropped area shape mismatch! Expected ({process_rect_canvas.height(), process_rect_canvas.width()}), got {local_canvas_area_uint8.shape[:2]}. Skipping ink application.")
-         return QRect()
-
     try:
-        area_height, area_width = local_canvas_area_uint8.shape[:2]
+        # Noise texture is still grayscale HxW for feibai calculation
+        area_height, area_width = local_canvas_area.shape[:2]
         noise_texture_area = np.random.rand(area_height, area_width).astype(np.float32)
     except Exception as e:
          print(f"Error generating noise texture: {e}.")
-         noise_texture_area = np.ones_like(local_canvas_area_uint8, dtype=np.float32) * 0.5
+         noise_texture_area = np.ones(local_canvas_area.shape[:2], dtype=np.float32) * 0.5
 
+    # Points relative to the local area origin (inclusive start)
     p1_local = QPoint(p1_canvas.x() - process_x1, p1_canvas.y() - process_y1)
     p2_local = QPoint(p2_canvas.x() - process_x1, p2_canvas.y() - process_y1)
 
     # --- Apply stamps along the interpolated path ---
     # Use linspace to get points including start and end, ensure correct number of points
-    # Need num_interpolation_steps + 1 points for num_interpolation_steps segments
+    # Need num_interpolation_steps + 1 points for num_interpolation_steps intervals
     num_points_to_interpolate = num_interpolation_steps + 1
+    # Use float coordinates for linspace
     interpolated_points = np.linspace([p1_local.x(), p1_local.y()], [p2_local.x(), p2_local.y()], num_points_to_interpolate)
 
     for point_coords in interpolated_points:
-        stamp_center_local = QPoint(int(point_coords[0]), int(point_coords[1]))
+        # Convert float interpolated coords back to nearest integer pixel point for stamp center
+        stamp_center_local = QPoint(int(round(point_coords[0])), int(round(point_coords[1])))
 
+        # Apply a single brush stamp at this interpolated point
         try:
             _apply_single_brush_stamp(
-                local_canvas_area_uint8,
+                local_canvas_area, # Pass the local HxWx3 array
                 stamp_center_local,
-                brush_params,
-                noise_texture_area,
+                brush_params, # Contains color and all other params
+                noise_texture_area, # Still HxW noise
                 segment_angle_rad
             )
         except Exception as e:
-             print(f"Error applying single stamp at ({p1_canvas.x() + int(t*dx_canvas)},{p1_canvas.y() + int(t*dy_canvas)}): {e}.")
+             print(f"Error applying single stamp at ({stamp_center_local.x()},{stamp_center_local.y()} relative): {e}.")
 
+    # --- Paste the modified local area back onto the Lienzo ---
     paste_rect_tuple = (process_rect_canvas.x(), process_rect_canvas.y(),
                         process_rect_canvas.width(), process_rect_canvas.height())
 
+    # Shape consistency checked inside paste_area
     try:
-        lienzo.paste_area(paste_rect_tuple, local_canvas_area_uint8)
+        lienzo.paste_area(paste_rect_tuple, local_canvas_area) # Paste the modified HxWx3 array
         return process_rect_canvas
     except Exception as e:
         print(f"Error pasting modified area: {e}. Skipping paste.")
@@ -399,9 +423,9 @@ def apply_basic_brush_stroke_segment(
 def finalize_stroke(
     lienzo: Lienzo,
     stroke_inked_region_canvas: QRect,
-    brush_params: dict
+    brush_params: dict # Contains wetness, size, etc.
 ) -> QRect:
-    """Finalizes a stroke by applying localized diffusion (blur) for ink, or nothing for eraser."""
+    """Finalizes a stroke by applying localized diffusion (blur) for ink, doing nothing for eraser."""
     is_eraser = brush_params.get('is_eraser', False)
 
     if is_eraser:
@@ -412,22 +436,22 @@ def finalize_stroke(
 
     else:
          final_updated_area_canvas = apply_localized_blur(
-            lienzo,
+            lienzo, # Lienzo has HxWx3 Data
             stroke_inked_region_canvas,
             brush_params.get('wetness', 70),
-            brush_params.get('size', 15)
+            brush_params.get('size', 15) # Base size needed for blur radius estimate
         )
          return final_updated_area_canvas
 
 def apply_localized_blur(
-    lienzo: Lienzo,
+    lienzo: Lienzo, # Lienzo has HxWx3 Data
     canvas_rect_to_blur: QRect,
     wetness: int,
-    brush_size: int
+    brush_size: int # Base size needed for blur radius
 ) -> QRect:
     """Applies localized diffusion (Bilateral Filter) to a region, blends, and pastes."""
     if lienzo is None or canvas_rect_to_blur.isNull() or wetness <= 0 or canvas_rect_to_blur.width() <= 0 or canvas_rect_to_blur.height() <= 0:
-        return QRect()
+        return QRect() # Return empty if wetness is 0
 
     canvas_height, canvas_width = lienzo.get_size()
     if canvas_height <= 0 or canvas_width <= 0: return QRect()
@@ -435,12 +459,12 @@ def apply_localized_blur(
     brush_size = max(1, int(brush_size))
     wetness = np.clip(int(wetness), 0, 100)
 
-    base_sigma_space = wetness / 100.0 * 20.0
-    base_sigma_space = max(1.0, base_sigma_space)
+    base_sigma_space = wetness / 100.0 * 20.0 # Maps wetness [0,100] to spatial sigma [0, 20]
+    base_sigma_space = max(1.0, base_sigma_space) # Min spatial sigma for effect
 
     estimated_blur_radius_for_expansion = int(base_sigma_space * 3.0)
-    estimated_blur_radius_for_expansion = max(estimated_blur_radius_for_expansion, brush_size * 2)
-    estimated_blur_radius_for_expansion = max(estimated_blur_radius_for_expansion, 15)
+    estimated_blur_radius_for_expansion = max(estimated_blur_radius_for_expansion, brush_size * 2) # Use brush size related buffer
+    estimated_blur_radius_for_expansion = max(estimated_blur_radius_for_expansion, 15) # Minimum buffer
 
     process_x1 = canvas_rect_to_blur.left() - estimated_blur_radius_for_expansion
     process_y1 = canvas_rect_to_blur.top() - estimated_blur_radius_for_expansion
@@ -465,45 +489,53 @@ def apply_localized_blur(
         return QRect()
 
     try:
-        processing_area_uint8 = lienzo.crop_area((process_rect_canvas.x(), process_rect_canvas.y(),
+        # Crop area using the calculated exclusive rectangle. Should return HxWx3.
+        processing_area_bgr = lienzo.crop_area((process_rect_canvas.x(), process_rect_canvas.y(),
                                                   process_rect_canvas.width(), process_rect_canvas.height()))
 
-        if processing_area_uint8 is None or processing_area_uint8.size == 0:
+        if processing_area_bgr is None or processing_area_bgr.size == 0:
              print("Warning: Cropping area for blur failed or returned empty.")
              return QRect()
+        if processing_area_bgr.shape[:2] != (process_rect_canvas.height(), process_rect_canvas.width()) or processing_area_bgr.shape[2] != 3:
+             print(f"FATAL ERROR: Cropped area for blur shape mismatch or invalid channels! Expected ({process_rect_canvas.height(), process_rect_canvas.width(), 3}), got {processing_area_bgr.shape}. Skipping blur.")
+             return QRect()
+
     except Exception as e:
         print(f"Error cropping Lienzo for blur: {e}. Skipping blur.")
         return QRect()
 
-    if processing_area_uint8.shape[:2] != (process_rect_canvas.height(), process_rect_canvas.width()):
-         print(f"FATAL ERROR: Cropped area for blur shape mismatch! Expected ({process_rect_canvas.height(), process_rect_canvas.width()}), got {processing_area_uint8.shape[:2]}. Skipping blur.")
-         return QRect()
+    original_processing_area_bgr = processing_area_bgr.copy() # Keep a copy of the original BGR area before blurring
 
-    original_processing_area_uint8 = processing_area_uint8.copy()
-
+    # sigmaColor: Color distance tolerance for BilateralFilter. Higher wetness -> Higher tolerance -> blur spreads across color differences.
     sigma_color = wetness / 100.0 * 150.0
     sigma_color = max(1.0, sigma_color)
 
     try:
-        processed_area_blurred = cv2.bilateralFilter(processing_area_uint8, 0, float(sigma_color), float(base_sigma_space))
+        # Apply cv2.bilateralFilter to the BGR image data
+        processed_area_blurred_bgr = cv2.bilateralFilter(processing_area_bgr, 0, float(sigma_color), float(base_sigma_space))
     except Exception as e:
          print(f"Error during cv2.bilateralFilter: {e}. Skipping blur.")
-         paste_rect_tuple = (process_rect_canvas.x(), process_rect_canvas.y(),
-                            process_rect_canvas.width(), process_rect_canvas.height())
-         try:
-             lienzo.paste_area(paste_rect_tuple, original_processing_area_uint8)
-             return process_rect_canvas
-         except Exception as paste_e:
-             print(f"Error pasting original area after blur error: {paste_e}.")
-             return QRect()
+         # Even if blur fails, try to paste the original cropped area back? Or just indicate failure.
+         # Let's just indicate failure for blur step.
+         return QRect()
 
-    blended_area_uint8 = np.minimum(original_processing_area_uint8, processed_area_blurred)
+    # --- Intelligent Blending for Color ---
+    # For colored ink diffusion, a simple np.minimum on BGR channels might cause color shifts.
+    # A more complex approach might involve blurring luminance and blending based on that,
+    # or blurring each channel independently and blending based on some ink model.
+    # However, for a basic version, minimum blending on BGR channels simulates each color channel
+    # getting darker independently, which is a possible behavior for some pigment mixes.
+    # Let's use np.minimum as a starting point and see if it looks acceptable.
 
+    # Blend the blurred BGR result with the original BGR area (before blur) using np.minimum channel-wise.
+    blended_area_bgr = np.minimum(original_processing_area_bgr, processed_area_blurred_bgr)
+
+    # --- Paste the blended BGR area back onto the Lienzo ---
     paste_rect_tuple = (process_rect_canvas.x(), process_rect_canvas.y(),
                         process_rect_canvas.width(), process_rect_canvas.height())
 
     try:
-        lienzo.paste_area(paste_rect_tuple, blended_area_uint8)
+        lienzo.paste_area(paste_rect_tuple, blended_area_bgr) # Paste the modified HxWx3 array
         return process_rect_canvas
     except Exception as e:
         print(f"Error pasting blended area: {e}. Skipping paste.")
