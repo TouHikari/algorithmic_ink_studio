@@ -170,13 +170,11 @@ def _apply_single_brush_stamp(
 
      # --- Apply Jitter to Size, Position, Angle ---
 
-     # Size Jitter: Variation percentage of base size, capped
-     size_variation_factor = (size_jitter / 100.0) * 0.75 # Max 75% variation of original size
+     size_variation_factor = (size_jitter / 100.0) * 0.75
      current_brush_size = base_brush_size * (1.0 + random.uniform(-size_variation_factor, size_variation_factor))
-     current_brush_size = max(1, int(current_brush_size)) # Ensure positive integer size
+     current_brush_size = max(1, int(current_brush_size))
      current_brush_radius = current_brush_size // 2
 
-     # Position Jitter: Variation percentage of base brush size (diameter)
      pos_variation_dist_max = (pos_jitter / 100.0) * base_brush_size
      if pos_variation_dist_max > 0:
          random_offset_dist = random.uniform(0, pos_variation_dist_max)
@@ -190,7 +188,6 @@ def _apply_single_brush_stamp(
      stamp_center_local_y = int(center_local.y() + offset_y)
      stamp_center_local = QPoint(stamp_center_local_x, stamp_center_local_y)
 
-     # Angle Control & Jitter
      current_angle_degrees = 0.0
      if angle_mode == 'Direction':
           if stamp_segment_angle_rad is not None:
@@ -211,7 +208,7 @@ def _apply_single_brush_stamp(
           current_angle_degrees = fixed_angle_degrees
           current_angle_degrees += random.uniform(-angle_jitter_degrees, angle_jitter_degrees)
 
-     current_angle_degrees = current_angle_degrees % 360.0 # Ensure angle is within 0-360 range
+     current_angle_degrees = current_angle_degrees % 360.0
 
      # --- Get and Transform Brush Shape ---
      brush_mask_size = current_brush_size
@@ -222,7 +219,7 @@ def _apply_single_brush_stamp(
 
      # --- Hardness Adjustment ---
      hardness_exponent = 1.0 + (hardness / 100.0) * 2.0
-     adjusted_brush_opacity = np.power(current_stamp_brush_shape_mask, hardness_exponent) # Apply gamma correction
+     adjusted_brush_opacity = np.power(current_stamp_brush_shape_mask, hardness_exponent)
      adjusted_brush_opacity = np.clip(adjusted_brush_opacity, 0.0, 1.0)
 
      # --- Calculate overlap region ---
@@ -250,7 +247,6 @@ def _apply_single_brush_stamp(
           print(f"Critical Slicing Error: Shape mismatch! Skipping stamp.")
           return
 
-     # --- Calculate Effective Opacity ---
      base_stamp_opacity = (density / 100.0) * (flow / 100.0)
      base_stamp_opacity = np.clip(base_stamp_opacity, 0.0, 1.0)
 
@@ -263,7 +259,6 @@ def _apply_single_brush_stamp(
      effective_pixel_opacity = base_stamp_opacity * brush_slice_opacity * feibai_modifier
      effective_pixel_opacity = np.clip(effective_pixel_opacity, 0.0, 1.0)
 
-     # --- Blend new ink ---
      canvas_slice_float = current_local_area_overlap_slice.astype(np.float32)
 
      if not is_eraser:
@@ -286,49 +281,39 @@ def apply_basic_brush_stroke_segment(
     canvas_width, canvas_height = lienzo.get_size()
     if canvas_width <= 0 or canvas_height <= 0: return QRect()
 
-    # --- Get brush size and jitter params here ---
-    base_brush_size = max(1, int(brush_params.get('size', 15))) # --- Define base_brush_size ---
+    base_brush_size = max(1, int(brush_params.get('size', 15)))
     brush_radius = base_brush_size // 2
 
     pos_jitter = np.clip(float(brush_params.get('pos_jitter', 0)), 0.0, 100.0)
     size_jitter = np.clip(float(brush_params.get('size_jitter', 0)), 0.0, 100.0)
 
-    # Calculate number of interpolation steps based on CANVAS distance
     dx_canvas = p2_canvas.x() - p1_canvas.x()
     dy_canvas = p2_canvas.y() - p1_canvas.y()
     dist_canvas = math.sqrt(dx_canvas**2 + dy_canvas**2)
 
-    # Determine interpolation steps. A reasonable number of stamps per pixel distance.
-    # For smoother strokes, stamp distance could be related to brush size or constant.
-    # Let's aim for stamps roughly every few pixels on the canvas surface, or related to brush size/2.
-    interpolation_density = 1.0 # Stamps per canvas unit distance (e.g., 1.0 stamp per pixel)
-    # Ensure stamps are close enough not to leave gaps, especially at small brush sizes.
-    # A common approach is stamps every ~BrushSize/2 or BrushSize/4 pixels.
-    # If brush size is 40, stamps could be every 10 pixels for flow 100.
-    # Let's base it on brush radius / 2 as minimum stepping distance.
-    min_step_distance = max(1, brush_radius // 2) # Stamp at least every radius/2 pixels or 1 pixel
+    # --- Calculate number of stamps/interpolation steps based on desired stamp spacing ---
+    # Stamps should be placed close enough to create contiguous lines,
+    # typically related to brush size or a fixed few pixels.
+    # Let's try spacing stamps by a quarter of the base brush size.
+    stamp_spacing = max(1.0, base_brush_size / 4.0) # Ensure spacing is at least 1 pixel distance
 
-    # If distance is less than min_step_distance, still apply at least one stamp.
-    # Otherwise, calculate steps based on distance / min_step_distance.
-    num_interpolation_steps = max(1, int(dist_canvas / min_step_distance))
+    # Number of steps = Total Distance / Spacing
+    # Number of stamps = Number of steps in distance + 1 (for the end point)
+    num_interpolation_steps = max(1, int(dist_canvas / stamp_spacing))
 
-    # Calculate segment angle for 'Direction' mode
     segment_angle_rad = None
     if dx_canvas != 0 or dy_canvas != 0:
          segment_angle_rad = math.atan2(dy_canvas, dx_canvas)
 
     # --- Calculate required processing area covering segment endpoints and max potential stamp influence ---
-    # Max stamp radius considers base size + size jitter variation
     max_size_variation_factor = (size_jitter / 100.0) * 0.75
-    max_possible_stamp_size = base_brush_size * (1.0 + max_size_variation_factor) # Apply potential max size increase
-    max_possible_stamp_radius = max(max_possible_stamp_size, 1.0) / 2.0 # Ensure radius is at least 0.5
+    max_possible_stamp_size = base_brush_size * (1.0 + max_size_variation_factor)
+    max_possible_stamp_radius = max(max_possible_stamp_size, 1.0) / 2.0
 
-    # Max position jitter offset considers base brush size (diameter)
     max_pos_jitter_offset = (pos_jitter / 100.0) * base_brush_size
 
-    # Buffer around the line segment endpoints needs to cover max stamp radius plus max position jitter offset
     buffer_radius = int(max_possible_stamp_radius + max_pos_jitter_offset)
-    buffer_radius = max(buffer_radius, base_brush_size) # Ensure buffer is at least base brush size for safety
+    buffer_radius = max(buffer_radius, base_brush_size)
 
     min_x_pt = min(p1_canvas.x(), p2_canvas.x())
     max_x_pt = max(p1_canvas.x(), p2_canvas.x())
@@ -343,8 +328,6 @@ def apply_basic_brush_stroke_segment(
 
     process_x2_excl = process_x2_incl + 1
     process_y2_excl = process_y2_incl + 1
-
-    canvas_width, canvas_height = lienzo.get_size() # Need lienzo dimensions for clamping
 
     process_x1 = max(0, process_x1)
     process_y1 = max(0, process_y1)
@@ -380,23 +363,18 @@ def apply_basic_brush_stroke_segment(
          print(f"Error generating noise texture: {e}.")
          noise_texture_area = np.ones_like(local_canvas_area_uint8, dtype=np.float32) * 0.5
 
-    # Points relative to the local area origin (inclusive start)
     p1_local = QPoint(p1_canvas.x() - process_x1, p1_canvas.y() - process_y1)
     p2_local = QPoint(p2_canvas.x() - process_x1, p2_canvas.y() - process_y1)
 
-    # --- Interpolate along segment and apply stamps ---
-    for i in range(num_interpolation_steps + 1):
-        t = float(i) / num_interpolation_steps if num_interpolation_steps > 0 else 0.0
+    # --- Apply stamps along the interpolated path ---
+    # Use linspace to get points including start and end, ensure correct number of points
+    # Need num_interpolation_steps + 1 points for num_interpolation_steps segments
+    num_points_to_interpolate = num_interpolation_steps + 1
+    interpolated_points = np.linspace([p1_local.x(), p1_local.y()], [p2_local.x(), p2_local.y()], num_points_to_interpolate)
 
-        # Current stamp center point in *CANVAS* coordinates (for accurate interpolation)
-        stamp_center_canvas_x = p1_canvas.x() + int(t * dx_canvas)
-        stamp_center_canvas_y = p1_canvas.y() + int(t * dy_canvas)
-        stamp_center_canvas = QPoint(stamp_center_canvas_x, stamp_center_canvas_y)
+    for point_coords in interpolated_points:
+        stamp_center_local = QPoint(int(point_coords[0]), int(point_coords[1]))
 
-        # Convert current stamp center to coordinates relative to the local area origin
-        stamp_center_local = QPoint(stamp_center_canvas.x() - process_x1, stamp_center_canvas.y() - process_y1)
-
-        # Apply a single brush stamp at this interpolated point
         try:
             _apply_single_brush_stamp(
                 local_canvas_area_uint8,
@@ -406,9 +384,8 @@ def apply_basic_brush_stroke_segment(
                 segment_angle_rad
             )
         except Exception as e:
-             print(f"Error applying single stamp at ({stamp_center_canvas.x()},{stamp_center_canvas.y()}): {e}.")
+             print(f"Error applying single stamp at ({p1_canvas.x() + int(t*dx_canvas)},{p1_canvas.y() + int(t*dy_canvas)}): {e}.")
 
-    # --- Paste the modified local area back onto the Lienzo ---
     paste_rect_tuple = (process_rect_canvas.x(), process_rect_canvas.y(),
                         process_rect_canvas.width(), process_rect_canvas.height())
 
@@ -438,7 +415,7 @@ def finalize_stroke(
             lienzo,
             stroke_inked_region_canvas,
             brush_params.get('wetness', 70),
-            brush_params.get('size', 15) # Base size needed for blur radius estimate
+            brush_params.get('size', 15)
         )
          return final_updated_area_canvas
 
@@ -461,11 +438,9 @@ def apply_localized_blur(
     base_sigma_space = wetness / 100.0 * 20.0
     base_sigma_space = max(1.0, base_sigma_space)
 
-    # Estimate expansion needed for blur kernel (~3*sigmaSpace or brush size)
-    # Use brush_size here, not estimated_blur_radius from previous section
     estimated_blur_radius_for_expansion = int(base_sigma_space * 3.0)
-    estimated_blur_radius_for_expansion = max(estimated_blur_radius_for_expansion, brush_size * 2) # Use brush size related buffer for blur
-    estimated_blur_radius_for_expansion = max(estimated_blur_radius_for_expansion, 15) # Minimum buffer
+    estimated_blur_radius_for_expansion = max(estimated_blur_radius_for_expansion, brush_size * 2)
+    estimated_blur_radius_for_expansion = max(estimated_blur_radius_for_expansion, 15)
 
     process_x1 = canvas_rect_to_blur.left() - estimated_blur_radius_for_expansion
     process_y1 = canvas_rect_to_blur.top() - estimated_blur_radius_for_expansion

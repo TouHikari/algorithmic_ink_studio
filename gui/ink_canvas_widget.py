@@ -25,20 +25,19 @@ class InkCanvasWidget(QWidget):
         self._is_drawing = False
         self._last_point_widget: QPoint = None
 
-        # Updated default parameters including new ones
         self._current_brush_params = {
             'size': 40,
             'density': 60,
             'wetness': 0,
             'feibai': 20,
-            'hardness': 50, # New
-            'flow': 100,   # New
+            'hardness': 50,
+            'flow': 100,
             'type': 'round',
-            'angle_mode': 'Direction', # New
-            'fixed_angle': 0, # New
-            'pos_jitter': 0, # New
-            'size_jitter': 0, # New
-            'angle_jitter': 0 # New
+            'angle_mode': 'Direction',
+            'fixed_angle': 0,
+            'pos_jitter': 0,
+            'size_jitter': 0,
+            'angle_jitter': 0
         }
 
         self._current_tool = "brush"
@@ -133,7 +132,8 @@ class InkCanvasWidget(QWidget):
 
     def paintEvent(self, event: QPaintEvent):
          painter = QPainter(self)
-         painter.fillRect(event.rect(), Qt.white)
+         # Fill background with light gray outside the canvas area
+         painter.fillRect(event.rect(), Qt.lightGray)
 
          if self._lienzo is None or self._lienzo.get_canvas_data().size == 0:
              painter.drawText(self.rect(), Qt.AlignCenter, "等待加载画布或图片...")
@@ -175,7 +175,6 @@ class InkCanvasWidget(QWidget):
              super().mousePressEvent(event)
              return
 
-        # Check for necessary brush parameters
         required_params = ['size', 'density', 'wetness', 'feibai', 'hardness', 'flow', 'type', 'angle_mode', 'fixed_angle', 'pos_jitter', 'size_jitter', 'angle_jitter']
         if not all(param in self._current_brush_params for param in required_params):
              print(f"Warning: Missing brush parameter(s). Cannot start operation. Params: {self._current_brush_params}")
@@ -190,7 +189,6 @@ class InkCanvasWidget(QWidget):
 
         canvas_point = self._widget_to_canvas(self._last_point_widget)
 
-        # Only proceed if canvas point is valid
         if canvas_point == QPoint(-1,-1):
              print("Warning: Start point outside canvas bounds. Cannot start operation.")
              self._is_drawing = False
@@ -253,7 +251,6 @@ class InkCanvasWidget(QWidget):
             event.accept()
             return
 
-        # Handle Drawing/Erasing only if left button is held and we are drawing
         if not self._is_drawing or self._lienzo is None or self._last_point_widget is None or not (event.buttons() & Qt.LeftButton):
             super().mouseMoveEvent(event)
             return
@@ -263,7 +260,6 @@ class InkCanvasWidget(QWidget):
         canvas_last_point = self._widget_to_canvas(self._last_point_widget)
         canvas_current_point = self._widget_to_canvas(current_point_widget)
 
-        # Only process if both points are valid canvas points and they are different
         if canvas_last_point == QPoint(-1,-1) or canvas_current_point == QPoint(-1,-1) or canvas_last_point == canvas_current_point:
              self._last_point_widget = current_point_widget
              return
@@ -312,13 +308,11 @@ class InkCanvasWidget(QWidget):
         params_for_engine = self._current_brush_params.copy()
         params_for_engine['is_eraser'] = (self._current_tool == "eraser")
 
-        # Handle the very last segment if needed
         if self._last_point_widget is not None:
             current_point_widget = event.pos()
             canvas_last_point = self._widget_to_canvas(self._last_point_widget)
             canvas_current_point = self._widget_to_canvas(current_point_widget)
 
-            # Only process if both points are valid canvas points and they are different
             if canvas_last_point != QPoint(-1,-1) and canvas_current_point != QPoint(-1,-1) and canvas_last_point != canvas_current_point:
                  try:
                       inked_rect_canvas = apply_basic_brush_stroke_segment(
