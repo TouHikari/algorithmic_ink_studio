@@ -2,7 +2,6 @@
 
 from PyQt5.QtWidgets import QWidget, QSizePolicy, QMessageBox, QRubberBand, QStyle
 from PyQt5.QtGui import QPainter, QPixmap, QMouseEvent, QPaintEvent, QImage, QColor, QCursor, QIcon
-# --- FIX: Import QRectF ---
 from PyQt5.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QRectF
 
 import numpy as np
@@ -26,12 +25,20 @@ class InkCanvasWidget(QWidget):
         self._is_drawing = False
         self._last_point_widget: QPoint = None
 
+        # Updated default parameters including new ones
         self._current_brush_params = {
             'size': 40,
             'density': 60,
             'wetness': 0,
             'feibai': 20,
-            'type': 'round'
+            'hardness': 50, # New
+            'flow': 100,   # New
+            'type': 'round',
+            'angle_mode': 'Direction', # New
+            'fixed_angle': 0, # New
+            'pos_jitter': 0, # New
+            'size_jitter': 0, # New
+            'angle_jitter': 0 # New
         }
 
         self._current_tool = "brush"
@@ -147,16 +154,12 @@ class InkCanvasWidget(QWidget):
              painter.drawText(self.rect(), Qt.AlignCenter, "画布绘制错误!")
              return
 
-         # Source rect is the entire pixmap
-         # --- FIX: Convert source_rect to QRectF ---
          source_rect_f = QRectF(pixmap.rect())
 
-         # Target rect on the widget is determined by pan offset and scaled canvas size
          scaled_width = canvas_width * self._zoom_factor
          scaled_height = canvas_height * self._zoom_factor
          target_rect_f = QRectF(self._pan_offset_widget.x(), self._pan_offset_widget.y(), scaled_width, scaled_height)
 
-         # --- FIX: Use QRectF for both target and source ---
          painter.drawPixmap(target_rect_f, pixmap, source_rect_f)
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -172,8 +175,10 @@ class InkCanvasWidget(QWidget):
              super().mousePressEvent(event)
              return
 
-        if 'type' not in self._current_brush_params or 'size' not in self._current_brush_params:
-             print(f"Warning: Missing brush parameter(s): {self._current_brush_params}. Cannot start drawing.")
+        # Check for necessary brush parameters
+        required_params = ['size', 'density', 'wetness', 'feibai', 'hardness', 'flow', 'type', 'angle_mode', 'fixed_angle', 'pos_jitter', 'size_jitter', 'angle_jitter']
+        if not all(param in self._current_brush_params for param in required_params):
+             print(f"Warning: Missing brush parameter(s). Cannot start operation. Params: {self._current_brush_params}")
              QMessageBox.warning(self, "操作出错", "笔刷参数不完整，无法开始操作。")
              super().mousePressEvent(event)
              return
@@ -184,6 +189,13 @@ class InkCanvasWidget(QWidget):
         self._stroke_inked_region_canvas = QRect()
 
         canvas_point = self._widget_to_canvas(self._last_point_widget)
+
+        # Only proceed if canvas point is valid
+        if canvas_point == QPoint(-1,-1):
+             print("Warning: Start point outside canvas bounds. Cannot start operation.")
+             self._is_drawing = False
+             super().mousePressEvent(event)
+             return
 
         params_for_engine = self._current_brush_params.copy()
         params_for_engine['is_eraser'] = (self._current_tool == "eraser")
@@ -241,7 +253,8 @@ class InkCanvasWidget(QWidget):
             event.accept()
             return
 
-        if not self._is_drawing or self._lienzo is None or self._last_point_widget is None or not (event.buttons() & Qt.LeftButton) or 'type' not in self._current_brush_params:
+        # Handle Drawing/Erasing only if left button is held and we are drawing
+        if not self._is_drawing or self._lienzo is None or self._last_point_widget is None or not (event.buttons() & Qt.LeftButton):
             super().mouseMoveEvent(event)
             return
 
@@ -250,6 +263,7 @@ class InkCanvasWidget(QWidget):
         canvas_last_point = self._widget_to_canvas(self._last_point_widget)
         canvas_current_point = self._widget_to_canvas(current_point_widget)
 
+        # Only process if both points are valid canvas points and they are different
         if canvas_last_point == QPoint(-1,-1) or canvas_current_point == QPoint(-1,-1) or canvas_last_point == canvas_current_point:
              self._last_point_widget = current_point_widget
              return
@@ -295,22 +309,16 @@ class InkCanvasWidget(QWidget):
              super().mouseReleaseEvent(event)
              return
 
-        if 'wetness' not in self._current_brush_params or 'size' not in self._current_brush_params:
-            print("Warning: Missing brush parameters for finalization. Skipping finalize_stroke.")
-            self._is_drawing = False
-            self._last_point_widget = None
-            self._stroke_inked_region_canvas = QRect()
-            super().mouseReleaseEvent(event)
-            return
-
         params_for_engine = self._current_brush_params.copy()
         params_for_engine['is_eraser'] = (self._current_tool == "eraser")
 
+        # Handle the very last segment if needed
         if self._last_point_widget is not None:
             current_point_widget = event.pos()
             canvas_last_point = self._widget_to_canvas(self._last_point_widget)
             canvas_current_point = self._widget_to_canvas(current_point_widget)
 
+            # Only process if both points are valid canvas points and they are different
             if canvas_last_point != QPoint(-1,-1) and canvas_current_point != QPoint(-1,-1) and canvas_last_point != canvas_current_point:
                  try:
                       inked_rect_canvas = apply_basic_brush_stroke_segment(
@@ -405,7 +413,6 @@ class InkCanvasWidget(QWidget):
 
         self.update()
 
-    # Coordinate transformation helpers, updated to use zoom and pan
     def _widget_to_canvas(self, widget_point: QPoint) -> QPoint:
         """Converts a point from widget coordinates to canvas data coordinates, considering zoom and pan."""
         if self._lienzo is None or self._zoom_factor <= 0 or self.width() <= 0 or self.height() <= 0:
@@ -480,7 +487,6 @@ class InkCanvasWidget(QWidget):
 
         return clamped_rect
 
-    # Additional Canvas Operations
     def load_image_into_canvas(self, image_data: np.ndarray):
         """Resizes and sets the given NumPy image data to the current canvas."""
         if image_data is None or image_data.size == 0:
