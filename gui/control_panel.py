@@ -2,7 +2,7 @@
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider,
                               QGroupBox, QSpacerItem, QSizePolicy, QPushButton,
-                              QSpinBox, QComboBox, QColorDialog, QFrame, QGridLayout) # Imported QGridLayout
+                              QSpinBox, QComboBox, QColorDialog, QFrame, QGridLayout)
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, pyqtSignal
 

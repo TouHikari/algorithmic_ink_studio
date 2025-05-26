@@ -3,7 +3,7 @@
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                               QPushButton, QSlider, QFileDialog, QMessageBox, QAction,
                               QSizePolicy, QActionGroup, QInputDialog)
-from PyQt5.QtGui import QPixmap, QImage, QIcon, QColor # Imported QColor
+from PyQt5.QtGui import QPixmap, QImage, QIcon, QColor
 from PyQt5.QtCore import Qt, QRect, QSize, QPoint, QCoreApplication
 
 import numpy as np
@@ -245,7 +245,7 @@ class MainWindow(QMainWindow):
                 f" | 参数：大小={brush_params.get('size', '-')}, 密度={brush_params.get('density', '-')}, 湿润度={brush_params.get('wetness', '-')}, 飞白={brush_params.get('feibai', '-')}, 硬度={brush_params.get('hardness', '-')}, 流量={brush_params.get('flow', '-')}"
                 f" 类型={brush_params.get('type', '-')}"
                 f" 角度模式={brush_params.get('angle_mode', '-')}"
-                f" | 颜色: {color_str}" # Added color info
+                f" | 颜色: {color_str}"
             )
             self.statusBar().showMessage(status_text)
 

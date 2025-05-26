@@ -305,10 +305,7 @@ class InkCanvasWidget(QWidget):
              super().mouseReleaseEvent(event)
              return
 
-        # --- FIX: Updated required_params for finalization ---
-        required_params = ['wetness', 'size', 'is_eraser'] # Minimum required for finalize_stroke
-        # Ensure all brush parameters from _current_brush_params are passed to finalization
-        # finalize_stroke just needs the dict, it handles which keys it uses.
+        required_params = ['wetness', 'size', 'is_eraser']
         params_for_engine = self._current_brush_params.copy()
         params_for_engine['is_eraser'] = (self._current_tool == "eraser") # Ensure is_eraser is set
 
